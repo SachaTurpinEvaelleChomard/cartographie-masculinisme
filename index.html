@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cartographie du réseau influmascu — vue interactive</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --panel: #141414;
+    --panel-border: #262626;
+    --text: #ededed;
+    --text-dim: #9a9a9a;
+    --accent: #8fb3ff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #app { width: 100vw; height: 100vh; position: relative; }
+  svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  svg.panning { cursor: grabbing; }
+
+  #topbar {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 20px;
+    background: linear-gradient(to bottom, rgba(10,10,10,0.92), rgba(10,10,10,0));
+    pointer-events: none; z-index: 10;
+  }
+  #topbar > * { pointer-events: auto; }
+  #title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; color: var(--text); }
+  #subtitle { font-size: 12px; color: var(--text-dim); }
+  #search {
+    margin-left: auto;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    color: var(--text); border-radius: 6px; padding: 7px 12px;
+    font-size: 13px; width: 220px; outline: none;
+  }
+  #search::placeholder { color: var(--text-dim); }
+  #search:focus { border-color: var(--accent); }
+
+  #caption-btn {
+    background: var(--panel); border: 1px solid var(--panel-border);
+    color: var(--text-dim); border-radius: 6px; padding: 7px 11px;
+    font-size: 13px; cursor: pointer; flex-shrink: 0;
+  }
+  #caption-btn:hover { color: var(--text); border-color: var(--accent); }
+
+  #caption-overlay, #scale-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center;
+    z-index: 100; padding: 24px;
+  }
+  #caption-overlay.open, #scale-overlay.open { display: flex; }
+  #caption-modal, #scale-modal {
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 22px 24px; max-width: 520px;
+    max-height: 80vh; overflow-y: auto; position: relative;
+  }
+  #caption-modal h4, #scale-modal h4 { margin: 0 0 10px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--accent); }
+  #caption-modal p, #scale-modal p { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--text); }
+  #caption-close, #scale-close {
+    position: absolute; top: 12px; right: 14px;
+    background: none; border: none; color: var(--text-dim);
+    font-size: 20px; cursor: pointer; line-height: 1;
+  }
+  #caption-close:hover, #scale-close:hover { color: var(--text); }
+
+  #legend {
+    position: absolute; left: 16px; bottom: 16px;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 12px 14px; font-size: 12px;
+    color: var(--text-dim); line-height: 1.9; z-index: 10;
+    max-width: 290px;
+  }
+  #legend .row { display: flex; align-items: center; gap: 8px; }
+  #legend .dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+  #legend h4 { margin: 0 0 6px 0; color: var(--text); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+  #legend .row.lv { align-items: flex-start; line-height: 1.3; margin-bottom: 6px; }
+  #legend .row.lv .dot { margin-top: 3px; }
+  #legend .row.lv b { color: var(--text); font-weight: 600; }
+  #legend .row.lv .sub { display: block; font-size: 11px; color: var(--text-dim); }
+  #legend .more {
+    background: none; border: none; padding: 0; margin: 6px 0 0 0;
+    color: var(--accent); font-size: 11.5px; cursor: pointer; text-align: left;
+    text-decoration: underline; text-underline-offset: 2px;
+  }
+  #legend .more:hover { color: var(--text); }
+  #scale-modal .intro { margin-bottom: 14px; }
+  #scale-modal .lvl { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 12px 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+  #scale-modal .lvl .dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
+  #scale-modal .lvl b { color: var(--text); }
+  #scale-modal .note { font-size: 12px; line-height: 1.55; color: var(--text-dim); margin: 0 0 8px 0; }
+  .lvl-short { color: var(--text-dim); }
+  #legend .sep { height: 1px; background: var(--panel-border); margin: 8px 0; }
+
+  #panel {
+    position: absolute; top: 0; right: 0; bottom: 0;
+    width: 300px; max-width: 85vw;
+    background: var(--panel); border-left: 1px solid var(--panel-border);
+    padding: 20px 18px; overflow-y: auto;
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    z-index: 20;
+  }
+  #panel.open { transform: translateX(0); }
+  #panel h3 { margin: 0 0 2px 0; font-size: 17px; color: var(--text); }
+  #panel .kind { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 16px; }
+  #panel .field { margin-bottom: 12px; }
+  #panel .field .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 2px; }
+  #panel .field .value { font-size: 14px; color: var(--text); }
+  #panel-close {
+    position: absolute; top: 16px; right: 16px;
+    background: none; border: none; color: var(--text-dim);
+    font-size: 20px; cursor: pointer; line-height: 1;
+  }
+  #panel-close:hover { color: var(--text); }
+  #hint {
+    position: absolute; bottom: 16px; right: 16px;
+    font-size: 11px; color: var(--text-dim); z-index: 10;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 8px 12px;
+  }
+  .node-label {
+    fill: #f2f2f2; font-size: 10px; pointer-events: none;
+    paint-order: stroke; stroke: #0a0a0a; stroke-width: 3px; stroke-linejoin: round;
+  }
+  .link { cursor: pointer; }
+  .link:hover { stroke-opacity: 1 !important; }
+  .node circle { cursor: pointer; }
+  .dimmed { opacity: 0.08; }
+  @media (max-width: 600px) {
+    #hint { display: none; }
+    #search { width: 140px; }
+    #legend { font-size: 11px; padding: 10px 12px; }
+    #legend .row.lv .sub { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <svg id="graph"><g id="viewport"><g id="links-layer"></g><g id="nodes-layer"></g></g></svg>
+
+  <div id="topbar">
+    <div>
+      <div id="title">Réseau influmascu — vue interactive</div>
+      <div id="subtitle">64 nœuds · 251 liens · glisser un nœud, cliquer un nœud/lien, pincer pour zoomer</div>
+    </div>
+    <input id="search" type="text" placeholder="Rechercher un nom...">
+    <button id="caption-btn" title="Figure description (English)">ⓘ Description</button>
+  </div>
+
+  <div id="caption-overlay">
+    <div id="caption-modal">
+      <button id="caption-close">&times;</button>
+      <h4>Figure description</h4>
+      <p>Graphical representation of the network of French masculinist influencers. Node size reflects a weighted combination of each actor's structural importance within the network (90%) and their follower count (10%), both log-normalised. Edge thickness is proportional to the strength of the coded relationship between two actors. Node colour distinguishes individual influencers from media outlets, and further encodes, for individuals, their level of masculinism on a five-point scale (from green, level 1, to dark red, level 5); media outlets are coloured separately, as this scale does not apply to them. The network was produced using Gephi Lite in July–August 2026.</p>
+    </div>
+  </div>
+
+  <div id="legend">
+    <h4>Niveau masculinisme</h4>
+    <div class="row lv"><span class="dot" style="background:rgb(26,122,44)"></span><span><b>1 — Influence légère</b><span class="sub">n'assume pas l'étiquette masculiniste</span></span></div>
+    <div class="row lv"><span class="dot" style="background:rgb(133,187,63)"></span><span><b>2 — Présent, non virulent</b><span class="sub">propos et pratiques discrets (ex. « bodycount »)</span></span></div>
+    <div class="row lv"><span class="dot" style="background:rgb(241,196,15)"></span><span><b>3 — Convaincu et assumé</b><span class="sub">sans hostilité explicite</span></span></div>
+    <div class="row lv"><span class="dot" style="background:rgb(230,126,34)"></span><span><b>4 — Assumé et hostile</b><span class="sub">propos haineux, animosité explicite</span></span></div>
+    <div class="row lv"><span class="dot" style="background:rgb(192,32,32)"></span><span><b>5 — Haine et violence</b><span class="sub">discours de haine et/ou appels à la violence</span></span></div>
+    <button class="more" id="scale-btn" type="button">ⓘ Définition des niveaux</button>
+    <div class="sep"></div>
+    <div class="row"><span class="dot" style="background:rgb(70,90,130)"></span>Média</div>
+    <div class="row"><span class="dot" style="background:rgb(170,170,170)"></span>Non déterminé</div>
+  </div>
+
+  <div id="scale-overlay">
+    <div id="scale-modal">
+      <button id="scale-close" type="button">&times;</button>
+      <h4>Échelle du niveau de masculinisme</h4>
+      <p class="intro">Chaque individu du corpus a été positionné sur une échelle ordinale à 5 niveaux, construite pour cette étude et appliquée de façon uniforme à l'ensemble du corpus.</p>
+      <div class="lvl"><span class="dot" style="background:rgb(26,122,44)"></span><div><b>1</b> — Ne revendique pas l'étiquette masculiniste, mais présente une influence et certains comportements masculinistes légers.</div></div>
+      <div class="lvl"><span class="dot" style="background:rgb(133,187,63)"></span><div><b>2</b> — Discours non virulent, mais masculinisme présent de façon « soft » à travers propos et pratiques (ex. mise en avant du « bodycount »).</div></div>
+      <div class="lvl"><span class="dot" style="background:rgb(241,196,15)"></span><div><b>3</b> — Masculinisme convaincu et assumé dans le fond du discours, mais sans propos haineux ni hostilité explicite envers les femmes ou les féministes : l'antiféminisme tient aux idées, pas au ton.</div></div>
+      <div class="lvl"><span class="dot" style="background:rgb(230,126,34)"></span><div><b>4</b> — Masculinisme convaincu et revendiqué, associé à des propos haineux et une animosité explicite.</div></div>
+      <div class="lvl"><span class="dot" style="background:rgb(192,32,32)"></span><div><b>5</b> — Masculinisme revendiqué, associé à des discours de haine et/ou des appels à la violence.</div></div>
+      <p class="note">Ce codage relève d'un jugement qualitatif des auteur·rices ; ses limites (subjectivité, cas ambigus, absence d'intercodage) sont discutées dans l'étude.</p>
+      <p class="note">Les organes médiatiques sont volontairement exclus de l'échelle (« non déterminé ») : leur niveau désignerait une ligne éditoriale collective plutôt qu'une position individuelle assumée, ce qui relève d'un autre objet d'analyse.</p>
+    </div>
+  </div>
+
+  <div id="hint">Double-clic sur le fond pour réinitialiser la sélection</div>
+
+  <div id="panel">
+    <button id="panel-close">&times;</button>
+    <div id="panel-content"></div>
+  </div>
+</div>
+
+<script>
+const DATA = {"nodes": [{"id": "0", "label": "Abbé Matthieu Raffray", "color": "rgb(230,126,34)", "size": 35.8, "x": -66.57, "y": 2.61, "type": "Personne", "community": "0", "betweenness": 0.0119, "degree": 13, "wdegree": 50, "followers": "202000", "niveau": "4", "vit": "2", "missing": false}, {"id": "1", "label": "Papacito", "color": "rgb(192,32,32)", "size": 42.57, "x": 101.59, "y": -77.13, "type": "Personne", "community": "2", "betweenness": 0.3798, "degree": 41, "wdegree": 141, "followers": "159000", "niveau": "5", "vit": "1", "missing": false}, {"id": "2", "label": "Julien Rochedy", "color": "rgb(230,126,34)", "size": 37.85, "x": -17.95, "y": -63.66, "type": "Personne", "community": "0", "betweenness": 0.0403, "degree": 20, "wdegree": 69, "followers": "168000", "niveau": "4", "vit": "1", "missing": false}, {"id": "3", "label": "Baptiste Marchais", "color": "rgb(192,32,32)", "size": 38.35, "x": -79.28, "y": -104.89, "type": "Personne", "community": "0", "betweenness": 0.0878, "degree": 23, "wdegree": 72, "followers": "270000", "niveau": "5", "vit": "1", "missing": false}, {"id": "4", "label": "Alex Hitchens", "color": "rgb(192,32,32)", "size": 22.79, "x": 94.19, "y": 625.42, "type": "Personne", "community": "1", "betweenness": 0.0287, "degree": 4, "wdegree": 6, "followers": "406000", "niveau": "5", "vit": "1", "missing": false}, {"id": "5", "label": "La Menace", "color": "rgb(241,196,15)", "size": 32.68, "x": -2.38, "y": 317.1, "type": "Personne", "community": "1", "betweenness": 0.1386, "degree": 10, "wdegree": 26, "followers": "2300000", "niveau": "3", "vit": "1", "missing": false}, {"id": "6", "label": "Alice Cordier", "color": "rgb(230,126,34)", "size": 33.17, "x": -9.33, "y": 43.51, "type": "Personne", "community": "0", "betweenness": 0.0005, "degree": 12, "wdegree": 33, "followers": "244000", "niveau": "4", "vit": "1", "missing": false}, {"id": "7", "label": "Thaïs d'Escufon", "color": "rgb(230,126,34)", "size": 36.33, "x": 8.49, "y": -114.97, "type": "Personne", "community": "3", "betweenness": 0.0371, "degree": 17, "wdegree": 53, "followers": "272000", "niveau": "4", "vit": "1", "missing": false}, {"id": "8", "label": "Anthony Sirius", "color": "rgb(230,126,34)", "size": 27.92, "x": 127.89, "y": 501.8, "type": "Personne", "community": "1", "betweenness": 0.0148, "degree": 3, "wdegree": 13, "followers": "1100000", "niveau": "4", "vit": "1", "missing": false}, {"id": "9", "label": "Antoine Blanco", "color": "rgb(241,196,15)", "size": 29.84, "x": -262.08, "y": -139.44, "type": "Personne", "community": "3", "betweenness": 0.0046, "degree": 4, "wdegree": 19, "followers": "405000", "niveau": "3", "vit": "1", "missing": false}, {"id": "10", "label": "Yomi Denzel", "color": "rgb(241,196,15)", "size": 29.27, "x": -377.5, "y": -166.72, "type": "Personne", "community": "3", "betweenness": 0.0287, "degree": 4, "wdegree": 16, "followers": "1200000", "niveau": "3", "vit": "1", "missing": false}, {"id": "11", "label": "Podcast \"Sans Permission\"", "color": "rgb(241,196,15)", "size": 31.87, "x": -180.05, "y": 21.07, "type": "Personne", "community": "3", "betweenness": 0.0667, "degree": 6, "wdegree": 27, "followers": "248000", "niveau": "3", "vit": "0", "missing": false}, {"id": "12", "label": "Balti", "color": "rgb(192,32,32)", "size": 15.57, "x": 687.62, "y": 637.11, "type": "Personne", "community": "1", "betweenness": 0.0, "degree": 1, "wdegree": 2, "followers": "16000", "niveau": "5", "vit": "0", "missing": false}, {"id": "13", "label": "AD Laurent", "color": "rgb(133,187,63)", "size": 26.55, "x": 423.87, "y": 415.0, "type": "Personne", "community": "1", "betweenness": 0.0476, "degree": 5, "wdegree": 11, "followers": "544000", "niveau": "2", "vit": "1", "missing": false}, {"id": "14", "label": "Bruno le Salé", "color": "rgb(192,32,32)", "size": 30.61, "x": 236.02, "y": -106.11, "type": "Personne", "community": "4", "betweenness": 0.0, "degree": 7, "wdegree": 22, "followers": "279000", "niveau": "5", "vit": "1", "missing": false}, {"id": "15", "label": "El Rayhan", "color": "rgb(230,126,34)", "size": 29.24, "x": 56.53, "y": -276.67, "type": "Personne", "community": "4", "betweenness": 0.0246, "degree": 6, "wdegree": 19, "followers": "113000", "niveau": "4", "vit": "1", "missing": false}, {"id": "16", "label": "Le Guiz", "color": "rgb(192,32,32)", "size": 25.32, "x": -449.76, "y": -4.02, "type": "Personne", "community": "0", "betweenness": 0.0563, "degree": 3, "wdegree": 11, "followers": "39900", "niveau": "5", "vit": "2", "missing": false}, {"id": "17", "label": "Psyhodélik", "color": "rgb(230,126,34)", "size": 26.2, "x": 349.71, "y": -149.42, "type": "Personne", "community": "2", "betweenness": 0.0, "degree": 8, "wdegree": 11, "followers": "260000", "niveau": "4", "vit": "1", "missing": false}, {"id": "18", "label": "Barbare civilisé", "color": "rgb(241,196,15)", "size": 27.27, "x": 799.9219332653654, "y": 878.5204308676208, "type": "Personne", "community": "1", "betweenness": 0.0461, "degree": 7, "wdegree": 14, "followers": "104000", "niveau": "3", "vit": "2", "missing": false}, {"id": "19", "label": "Le Raptor", "color": "rgb(192,32,32)", "size": 36.7, "x": 73.66, "y": -122.52, "type": "Personne", "community": "2", "betweenness": 0.1164, "degree": 24, "wdegree": 59, "followers": "132000", "niveau": "5", "vit": "1", "missing": false}, {"id": "20", "label": "Valek", "color": "rgb(192,32,32)", "size": 34.8, "x": 203.4, "y": -152.65, "type": "Personne", "community": "4", "betweenness": 0.0059, "degree": 13, "wdegree": 41, "followers": "382000", "niveau": "5", "vit": "1", "missing": false}, {"id": "21", "label": "Boulevard Voltaire", "color": "rgb(70,90,130)", "size": 33.49, "x": 2048.484645525614, "y": -394.0403870954746, "type": "Média", "community": "-2", "betweenness": 0.0, "degree": 13, "wdegree": 34, "followers": "318000", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "22", "label": "Frontière", "color": "rgb(70,90,130)", "size": 36.3, "x": 1979.7980643643277, "y": -134.04038709547459, "type": "Média", "community": "-2", "betweenness": 0.0154, "degree": 14, "wdegree": 50, "followers": "577000", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "23", "label": "Marsault", "color": "rgb(192,32,32)", "size": 34.96, "x": 50.84, "y": -195.59, "type": "Personne", "community": "2", "betweenness": 0.0117, "degree": 11, "wdegree": 43, "followers": "278000", "niveau": "5", "vit": "1", "missing": false}, {"id": "24", "label": "TVLibertés", "color": "rgb(70,90,130)", "size": 38.54, "x": 2600.807742542691, "y": 109.79806452262697, "type": "Média", "community": "-2", "betweenness": 0.0071, "degree": 19, "wdegree": 67, "followers": "1100000", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "25", "label": "VA +", "color": "rgb(70,90,130)", "size": 37.31, "x": 2315.031005848748, "y": -12.183009368081002, "type": "Média", "community": "0", "betweenness": 0.1144, "degree": 19, "wdegree": 59, "followers": "488000", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "26", "label": "Hugo Nemesis Deux", "color": "rgb(230,126,34)", "size": 31.0, "x": -216.25, "y": -80.0, "type": "Personne", "community": "0", "betweenness": 0.0077, "degree": 8, "wdegree": 25, "followers": "112000", "niveau": "4", "vit": "2", "missing": false}, {"id": "27", "label": "Cercle Aristote", "color": "rgb(70,90,130)", "size": 35.94, "x": 2271.359462636224, "y": -153.37245424771777, "type": "Média", "community": "-2", "betweenness": 0.0742, "degree": 11, "wdegree": 51, "followers": "204000", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "28", "label": "BryanforReal", "color": "rgb(192,32,32)", "size": 16.53, "x": 108.3, "y": 964.51, "type": "Personne", "community": "1", "betweenness": 0.0, "degree": 1, "wdegree": 2, "followers": "123000", "niveau": "5", "vit": "0", "missing": false}, {"id": "29", "label": "Greg Tabibian", "color": "rgb(230,126,34)", "size": 34.88, "x": -55.74, "y": -331.01, "type": "Personne", "community": "0", "betweenness": 0.0461, "degree": 10, "wdegree": 41, "followers": "453000", "niveau": "4", "vit": "1", "missing": false}, {"id": "30", "label": "Omerta", "color": "rgb(70,90,130)", "size": 36.17, "x": 2637.1712266869017, "y": -158.282709668322, "type": "Média", "community": "-2", "betweenness": 0.0588, "degree": 13, "wdegree": 49, "followers": "577000", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "31", "label": "Stéphane Édouard", "color": "rgb(230,126,34)", "size": 31.58, "x": 201.17, "y": 15.89, "type": "Personne", "community": "3", "betweenness": 0.0005, "degree": 10, "wdegree": 25, "followers": "382000", "niveau": "4", "vit": "1", "missing": false}, {"id": "32", "label": "Daniel Conversano", "color": "rgb(192,32,32)", "size": 25.8, "x": -280.41, "y": -52.26, "type": "Personne", "community": "0", "betweenness": 0.0005, "degree": 5, "wdegree": 12, "followers": "36000", "niveau": "5", "vit": "1", "missing": false}, {"id": "33", "label": "Kroc Blanc", "color": "rgb(192,32,32)", "size": 29.72, "x": -180.95, "y": -230.37, "type": "Personne", "community": "0", "betweenness": 0.0293, "degree": 9, "wdegree": 21, "followers": "80000", "niveau": "5", "vit": "2", "missing": false}, {"id": "34", "label": "FDesouche", "color": "rgb(70,90,130)", "size": 35.81, "x": 2568.4846455256143, "y": -390.0, "type": "Média", "community": "-2", "betweenness": 0.0296, "degree": 18, "wdegree": 48, "followers": "363000", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "35", "label": "Lapin du Futur", "color": "rgb(230,126,34)", "size": 23.03, "x": 264.65, "y": -362.44, "type": "Personne", "community": "2", "betweenness": 0.0, "degree": 3, "wdegree": 7, "followers": "101000", "niveau": "4", "vit": "2", "missing": false}, {"id": "36", "label": "Tibo Inshape", "color": "rgb(26,122,44)", "size": 26.46, "x": -127.52, "y": 194.2, "type": "Personne", "community": "3", "betweenness": 0.0, "degree": 4, "wdegree": 8, "followers": "26900000", "niveau": "1", "vit": "1", "missing": false}, {"id": "37", "label": "Tatiana Ventôse", "color": "rgb(26,122,44)", "size": 29.05, "x": -48.92, "y": -537.98, "type": "Personne", "community": "0", "betweenness": 0.0026, "degree": 5, "wdegree": 17, "followers": "339000", "niveau": "1", "vit": "1", "missing": false}, {"id": "38", "label": "Georges Matharan", "color": "rgb(230,126,34)", "size": 32.52, "x": 148.1, "y": -216.33, "type": "Personne", "community": "2", "betweenness": 0.001, "degree": 9, "wdegree": 30, "followers": "230000", "niveau": "4", "vit": "1", "missing": false}, {"id": "39", "label": "Greg Toussaint", "color": "rgb(192,32,32)", "size": 28.3, "x": 336.5, "y": -16.93, "type": "Personne", "community": "2", "betweenness": 0.0, "degree": 7, "wdegree": 15, "followers": "370000", "niveau": "5", "vit": "1", "missing": false}, {"id": "40", "label": "Hamza Yacoubi", "color": "rgb(230,126,34)", "size": 14.03, "x": -789.97, "y": -436.93, "type": "Personne", "community": "3", "betweenness": 0.0, "degree": 1, "wdegree": 1, "followers": "196000", "niveau": "4", "vit": "1", "missing": false}, {"id": "41", "label": "Jean-Onch le Musclay", "color": "rgb(241,196,15)", "size": 20.23, "x": 401.24, "y": -316.93, "type": "Personne", "community": "4", "betweenness": 0.0, "degree": 2, "wdegree": 4, "followers": "217000", "niveau": "3", "vit": "0", "missing": false}, {"id": "42", "label": "Le Fil d'Actu", "color": "rgb(70,90,130)", "size": 25.09, "x": 2251.7660400522745, "y": -261.74337014856013, "type": "Média", "community": "-2", "betweenness": 0.0, "degree": 2, "wdegree": 9, "followers": "333000", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "43", "label": "Le Hussard", "color": "rgb(241,196,15)", "size": 26.78, "x": 297.37, "y": -231.25, "type": "Personne", "community": "2", "betweenness": 0.0287, "degree": 4, "wdegree": 13, "followers": "98100", "niveau": "3", "vit": "2", "missing": false}, {"id": "44", "label": "Les Philogynes", "color": "rgb(230,126,34)", "size": 21.24, "x": 537.9249060062526, "y": 187.65010872189137, "type": "Personne", "community": "1", "betweenness": 0.0, "degree": 2, "wdegree": 5, "followers": "137000", "niveau": "4", "vit": "2", "missing": false}, {"id": "45", "label": "Oussama Ammar", "color": "rgb(133,187,63)", "size": 31.85, "x": -158.78, "y": -167.82, "type": "Personne", "community": "3", "betweenness": 0.0264, "degree": 6, "wdegree": 26, "followers": "396000", "niveau": "2", "vit": "1", "missing": false}, {"id": "46", "label": "Ralph Muller", "color": "rgb(241,196,15)", "size": 19.72, "x": -87.44, "y": -424.46, "type": "Personne", "community": "0", "betweenness": 0.0, "degree": 2, "wdegree": 4, "followers": "73500", "niveau": "3", "vit": "2", "missing": false}, {"id": "47", "label": "The ROB", "color": "rgb(192,32,32)", "size": 30.16, "x": 248.76, "y": 114.54, "type": "Personne", "community": "2", "betweenness": 0.0838, "degree": 7, "wdegree": 21, "followers": "204000", "niveau": "5", "vit": "1", "missing": false}, {"id": "48", "label": "TomsurSnap", "color": "rgb(230,126,34)", "size": 25.66, "x": 322.51, "y": 593.09, "type": "Personne", "community": "1", "betweenness": 0.0072, "degree": 2, "wdegree": 9, "followers": "1100000", "niveau": "4", "vit": "1", "missing": false}, {"id": "49", "label": "Le Philosef", "color": "rgb(133,187,63)", "size": 28.17, "x": 212.47, "y": 194.65, "type": "Personne", "community": "1", "betweenness": 0.0297, "degree": 11, "wdegree": 17, "followers": "53000", "niveau": "2", "vit": "2", "missing": false}, {"id": "50", "label": "Oseille TV", "color": "rgb(133,187,63)", "size": 24.09, "x": -773.33, "y": 81.67, "type": "Personne", "community": "0", "betweenness": 0.0287, "degree": 2, "wdegree": 8, "followers": "178000", "niveau": "2", "vit": "1", "missing": false}, {"id": "51", "label": "Golden Boy", "color": "rgb(192,32,32)", "size": 21.43, "x": 106.16, "y": -470.19, "type": "Personne", "community": "4", "betweenness": 0.0, "degree": 2, "wdegree": 5, "followers": "206000", "niveau": "5", "vit": "1", "missing": false}, {"id": "52", "label": "CHRØNIC", "color": "rgb(230,126,34)", "size": 20.19, "x": -341.62, "y": -368.31, "type": "Personne", "community": "0", "betweenness": 0.0, "degree": 2, "wdegree": 5, "followers": "15000", "niveau": "4", "vit": "2", "missing": false}, {"id": "53", "label": "Daniil Le Russe", "color": "rgb(241,196,15)", "size": 17.98, "x": -158.48, "y": 643.27, "type": "Personne", "community": "1", "betweenness": 0.0, "degree": 1, "wdegree": 2, "followers": "2620000", "niveau": "3", "vit": "1", "missing": false}, {"id": "54", "label": "Radio Courtoisie", "color": "rgb(70,90,130)", "size": 31.85, "x": 2260.0, "y": 130.0, "type": "Média", "community": "-2", "betweenness": 0.0004, "degree": 9, "wdegree": 31, "followers": "35500", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "55", "label": "Radio Athéna", "color": "rgb(70,90,130)", "size": 28.06, "x": 2064.6461940341524, "y": 117.87883871357619, "type": "Média", "community": "-2", "betweenness": 0.0002, "degree": 5, "wdegree": 17, "followers": "41900", "niveau": "Non déterminé", "vit": "0", "missing": false}, {"id": "56", "label": "Jean-Marie Cordaro", "color": "rgb(192,32,32)", "size": 21.81, "x": 103.25, "y": 280.96, "type": "Personne", "community": "1", "betweenness": 0.0, "degree": 5, "wdegree": 6, "followers": "51000", "niveau": "5", "vit": "1", "missing": false}, {"id": "57", "label": "Charles Dereeper", "color": "rgb(241,196,15)", "size": 18.91, "x": -1000.0, "y": 139.87, "type": "Personne", "community": "0", "betweenness": 0.0, "degree": 1, "wdegree": 4, "followers": "13200", "niveau": "3", "vit": "2", "missing": false}, {"id": "58", "label": "GuillaumeREDPILL", "color": "rgb(192,32,32)", "size": 8.58, "x": 1557.8806381463382, "y": 352.7110021586557, "type": "Personne", "community": "-1", "betweenness": 0.0, "degree": 0, "wdegree": 0, "followers": "37100", "niveau": "5", "vit": "0", "missing": false}, {"id": "59", "label": "Killian Sensei", "color": "rgb(230,126,34)", "size": 9.37, "x": 700.0, "y": 1212.44, "type": "Personne", "community": "-1", "betweenness": 0.0, "degree": 0, "wdegree": 0, "followers": "197000", "niveau": "4", "vit": "1", "missing": false}, {"id": "60", "label": "Hugo Raverdy", "color": "rgb(241,196,15)", "size": 8.95, "x": -700.0, "y": 1212.44, "type": "Personne", "community": "-1", "betweenness": 0.0, "degree": 0, "wdegree": 0, "followers": "80000", "niveau": "3", "vit": "0", "missing": false}, {"id": "61", "label": "Le Disrupteur", "color": "rgb(241,196,15)", "size": 8.18, "x": -1400.0, "y": 0.0, "type": "Personne", "community": "-1", "betweenness": 0.0, "degree": 0, "wdegree": 0, "followers": "15900", "niveau": "3", "vit": "2", "missing": false}, {"id": "62", "label": "Medhi Matthieu", "color": "rgb(241,196,15)", "size": 9.24, "x": -700.0, "y": -1212.44, "type": "Personne", "community": "-1", "betweenness": 0.0, "degree": 0, "wdegree": 0, "followers": "149000", "niveau": "3", "vit": "1", "missing": false}, {"id": "63", "label": "Mathieu Esnée", "color": "rgb(133,187,63)", "size": 8.0, "x": 700.0, "y": -1212.44, "type": "Personne", "community": "-1", "betweenness": 0.0, "degree": 0, "wdegree": 0, "followers": "10800", "niveau": "2", "vit": "2", "missing": false}], "edges": [{"source": "0", "target": "1", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Collaboration", "label": "a baptisé Papacito,", "weight": "4", "sourceLabel": "Abbé Matthieu Raffray", "targetLabel": "Papacito"}, {"source": "0", "target": "2", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Collaboration", "label": "Revendique sa conversion au catholicisme + dîner à Rome (StreetPress)", "weight": "4", "sourceLabel": "Abbé Matthieu Raffray", "targetLabel": "Julien Rochedy"}, {"source": "0", "target": "3", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Collaboration", "label": "Édité chez Hétairie + affichage public commun (Wikipédia) + vidéo commune : \"Zoom - Baptiste Marchais et l'abbé Matthieu Raffray : Oui, au catholicisme viril !\"", "weight": "4", "sourceLabel": "Abbé Matthieu Raffray", "targetLabel": "Baptiste Marchais"}, {"source": "1", "target": "6", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention négative", "label": "Accuse de se nourrir de la détresse affective des jeunes hommes", "weight": "1", "sourceLabel": "Papacito", "targetLabel": "Alice Cordier"}, {"source": "1", "target": "3", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Invitation", "label": "Participation au podcast Burger Ring", "weight": "4", "sourceLabel": "Papacito", "targetLabel": "Baptiste Marchais"}, {"source": "1", "target": "3", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Invitation", "label": "Repas du Seigneur 3", "weight": "4", "sourceLabel": "Papacito", "targetLabel": "Baptiste Marchais"}, {"source": "1", "target": "14", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Chaine youtube en commun en 2020", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "Bruno le Salé"}, {"source": "1", "target": "15", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Chaine youtube en commun en 2020", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "El Rayhan"}, {"source": "1", "target": "2", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Co-Création", "label": "Projet de film historique en 2022 (échec)", "weight": "4", "sourceLabel": "Papacito", "targetLabel": "Julien Rochedy"}, {"source": "1", "target": "2", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Co-écriture du livre Veni, Vidi, Vici : Menace sur les gauchistes 2022", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "Julien Rochedy"}, {"source": "1", "target": "19", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Podcast 10 000 pas", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "Le Raptor"}, {"source": "1", "target": "19", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Podcast Burger Ring", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "Le Raptor"}, {"source": "1", "target": "19", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Groupuscule Vengeance Patriote", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "Le Raptor"}, {"source": "1", "target": "23", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Hebdomadaire La Furia", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "Marsault"}, {"source": "1", "target": "23", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "BD FDP de la mode", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "Marsault"}, {"source": "1", "target": "7", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Co-Création", "label": "Projet de film historique en 2022 (échec)", "weight": "4", "sourceLabel": "Papacito", "targetLabel": "Thaïs d'Escufon"}, {"source": "1", "target": "20", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Chaine youtube en commun en 2020", "weight": "5", "sourceLabel": "Papacito", "targetLabel": "Valek"}, {"source": "1", "target": "31", "color": "rgb(192,32,32)", "thickness": 4.8, "type": "Partenariat", "label": "Contributions ponctuelles dans La Furia", "weight": "3", "sourceLabel": "Papacito", "targetLabel": "Stéphane Édouard"}, {"source": "2", "target": "3", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Événement commun", "label": "campagne d’insulte contre une journaliste de MediaPart en 2021", "weight": "3", "sourceLabel": "Julien Rochedy", "targetLabel": "Baptiste Marchais"}, {"source": "2", "target": "38", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Événement commun", "label": "campagne d’insulte contre une journaliste de MediaPart en 2021", "weight": "3", "sourceLabel": "Julien Rochedy", "targetLabel": "Georges Matharan"}, {"source": "2", "target": "0", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéo : Abbé Raffray : le retour de Dieu dans une France en ruines", "weight": "4", "sourceLabel": "Julien Rochedy", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "3", "target": "14", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Baptiste Marchais", "targetLabel": "Bruno le Salé"}, {"source": "3", "target": "15", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Baptiste Marchais", "targetLabel": "El Rayhan"}, {"source": "3", "target": "16", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Podcast Radio Dixie", "weight": "5", "sourceLabel": "Baptiste Marchais", "targetLabel": "Le Guiz"}, {"source": "3", "target": "17", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention commune", "label": "Psyhodélik parle de Baptiste Marchais dans ses vidéos d'actu", "weight": "1", "sourceLabel": "Baptiste Marchais", "targetLabel": "Psyhodélik"}, {"source": "3", "target": "7", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Co-Animation", "label": "Épisode \"Café cartouche\" chez Bench&Cigars", "weight": "4", "sourceLabel": "Baptiste Marchais", "targetLabel": "Thaïs d'Escufon"}, {"source": "4", "target": "5", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention Commune", "label": "\"relayé et loué par la Menace\"", "weight": "2", "sourceLabel": "Alex Hitchens", "targetLabel": "La Menace"}, {"source": "5", "target": "2", "color": "rgb(241,196,15)", "thickness": 2.7, "type": "Mention commune", "label": "comparaison idéologique...", "weight": "2", "sourceLabel": "La Menace", "targetLabel": "Julien Rochedy"}, {"source": "5", "target": "1", "color": "rgb(241,196,15)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "La Menace", "targetLabel": "Papacito"}, {"source": "6", "target": "3", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Événement commun", "label": "Conflit avec Baptiste Marchais (agression en 2021, plainte déposée)", "weight": "3", "sourceLabel": "Alice Cordier", "targetLabel": "Baptiste Marchais"}, {"source": "6", "target": "2", "color": "rgb(230,126,34)", "thickness": 2.7, "type": "Mention commune", "label": "Séance photo", "weight": "2", "sourceLabel": "Alice Cordier", "targetLabel": "Julien Rochedy"}, {"source": "6", "target": "7", "color": "rgb(230,126,34)", "thickness": 2.7, "type": "Mention commune", "label": "Photo ensemble etc...", "weight": "2", "sourceLabel": "Alice Cordier", "targetLabel": "Thaïs d'Escufon"}, {"source": "6", "target": "0", "color": "rgb(230,126,34)", "thickness": 2.7, "type": "Événement commun", "label": "Aperçue à une réunion organisée par Raffray pour ses abonnés (StreetPress)", "weight": "2", "sourceLabel": "Alice Cordier", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "7", "target": "2", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Co-Création", "label": "Projet de film historique en 2022 (échec)", "weight": "4", "sourceLabel": "Thaïs d'Escufon", "targetLabel": "Julien Rochedy"}, {"source": "8", "target": "5", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéo commune : \"J’AI REJOINT LAMENACE EN ANDORRE\" (209k vues)", "weight": "4", "sourceLabel": "Anthony Sirius", "targetLabel": "La Menace"}, {"source": "8", "target": "5", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéo commune \"LA MENACE ME FAIT DEVENIR UN HOMME !\" (669k vues)", "weight": "4", "sourceLabel": "Anthony Sirius", "targetLabel": "La Menace"}, {"source": "9", "target": "10", "color": "rgb(241,196,15)", "thickness": 9.0, "type": "Co-Création", "label": "Podcast \"Sans Permission\" en commun", "weight": "5", "sourceLabel": "Antoine Blanco", "targetLabel": "Yomi Denzel"}, {"source": "9", "target": "11", "color": "rgb(241,196,15)", "thickness": 9.0, "type": "Co-Création", "label": "Co-Création Podcast \"Sans Permission\"", "weight": "5", "sourceLabel": "Antoine Blanco", "targetLabel": "Podcast \"Sans Permission\""}, {"source": "9", "target": "7", "color": "rgb(241,196,15)", "thickness": 6.9, "type": "Collaboration", "label": "Antoine Blanco et Oussama Ammar se sont rendus sur la chaîne de Thaïs d’Escufon", "weight": "4", "sourceLabel": "Antoine Blanco", "targetLabel": "Thaïs d'Escufon"}, {"source": "10", "target": "11", "color": "rgb(241,196,15)", "thickness": 9.0, "type": "Co-Création", "label": "Co-Création Podcast \"Sans Permission\"", "weight": "5", "sourceLabel": "Yomi Denzel", "targetLabel": "Podcast \"Sans Permission\""}, {"source": "11", "target": "36", "color": "rgb(241,196,15)", "thickness": 6.9, "type": "Invitation", "label": "invitation lors d'une émission du Podcast \"Sans Permission\"", "weight": "4", "sourceLabel": "Podcast \"Sans Permission\"", "targetLabel": "Tibo Inshape"}, {"source": "11", "target": "19", "color": "rgb(241,196,15)", "thickness": 6.9, "type": "Invitation", "label": "invitation lors d'une émission du Podcast \"Sans Permission\"", "weight": "4", "sourceLabel": "Podcast \"Sans Permission\"", "targetLabel": "Le Raptor"}, {"source": "11", "target": "5", "color": "rgb(241,196,15)", "thickness": 6.9, "type": "Invitation", "label": "invitation lors d'une émission du Podcast \"Sans Permission\"", "weight": "4", "sourceLabel": "Podcast \"Sans Permission\"", "targetLabel": "La Menace"}, {"source": "12", "target": "13", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Événement commun", "label": "Vidéo : \"BALTI DISCUTE AVEC AD LAURENT ! ILS METTENT LES CHOSES AU CLAIR ?! - Balti VOD", "weight": "2", "sourceLabel": "Balti", "targetLabel": "AD Laurent"}, {"source": "15", "target": "33", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention positive", "label": "Kroc Blanc dit l'avoir \"lancé\"", "weight": "1", "sourceLabel": "El Rayhan", "targetLabel": "Kroc Blanc"}, {"source": "17", "target": "14", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention positive", "label": "Vidéo Odysee analysant Bruno Le Salé", "weight": "1", "sourceLabel": "Psyhodélik", "targetLabel": "Bruno le Salé"}, {"source": "17", "target": "39", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention positive", "label": "Post X et forum Onche", "weight": "1", "sourceLabel": "Psyhodélik", "targetLabel": "Greg Toussaint"}, {"source": "17", "target": "19", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention positive", "label": "Vidéo Odysee analysant Le Raptor", "weight": "1", "sourceLabel": "Psyhodélik", "targetLabel": "Le Raptor"}, {"source": "17", "target": "1", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention positive", "label": "Vidéo Odysee analysant Papacito", "weight": "1", "sourceLabel": "Psyhodélik", "targetLabel": "Papacito"}, {"source": "17", "target": "31", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention positive", "label": "Post X et forum Onche", "weight": "1", "sourceLabel": "Psyhodélik", "targetLabel": "Stéphane Édouard"}, {"source": "17", "target": "20", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention positive", "label": "Vidéo Odysee analysant Valek", "weight": "1", "sourceLabel": "Psyhodélik", "targetLabel": "Valek"}, {"source": "18", "target": "2", "color": "rgb(133,187,63)", "thickness": 2.7, "type": "Mention Commune", "label": "Rochedy l'a remercié publiquement", "weight": "2", "sourceLabel": "Barbare civilisé", "targetLabel": "Julien Rochedy"}, {"source": "18", "target": "19", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention positive", "label": "", "weight": "1", "sourceLabel": "Barbare civilisé", "targetLabel": "Le Raptor"}, {"source": "18", "target": "1", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention positive", "label": "", "weight": "1", "sourceLabel": "Barbare civilisé", "targetLabel": "Papacito"}, {"source": "18", "target": "20", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention positive", "label": "", "weight": "1", "sourceLabel": "Barbare civilisé", "targetLabel": "Valek"}, {"source": "19", "target": "3", "color": "rgb(192,32,32)", "thickness": 4.8, "type": "Événement commun", "label": "Podcast commun à Sud Radio", "weight": "3", "sourceLabel": "Le Raptor", "targetLabel": "Baptiste Marchais"}, {"source": "19", "target": "3", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Invitation", "label": "Invitation sur ses podcasts", "weight": "4", "sourceLabel": "Le Raptor", "targetLabel": "Baptiste Marchais"}, {"source": "19", "target": "14", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention positive", "label": "", "weight": "1", "sourceLabel": "Le Raptor", "targetLabel": "Bruno le Salé"}, {"source": "19", "target": "41", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Inspiration", "label": "Le Raptor cite Jean-Onche le Musclay comme inspiration", "weight": "2", "sourceLabel": "Le Raptor", "targetLabel": "Jean-Onch le Musclay"}, {"source": "19", "target": "36", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention negative", "label": "a ciblé Tibo InShape dans son format \"raptorisation\" (moqueries/insultes)", "weight": "1", "sourceLabel": "Le Raptor", "targetLabel": "Tibo Inshape"}, {"source": "19", "target": "20", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Co-Animation", "label": "Lives en commun", "weight": "4", "sourceLabel": "Le Raptor", "targetLabel": "Valek"}, {"source": "20", "target": "14", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "VK Studio", "weight": "5", "sourceLabel": "Valek", "targetLabel": "Bruno le Salé"}, {"source": "20", "target": "14", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Co-Animation", "label": "chaîne youtube commune", "weight": "4", "sourceLabel": "Valek", "targetLabel": "Bruno le Salé"}, {"source": "20", "target": "14", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Invitation", "label": "Vidéo sur le port d'arme", "weight": "4", "sourceLabel": "Valek", "targetLabel": "Bruno le Salé"}, {"source": "20", "target": "15", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "Chaine youtube en commun en 2020", "weight": "5", "sourceLabel": "Valek", "targetLabel": "El Rayhan"}, {"source": "20", "target": "7", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Co-Animation", "label": "Vidéos communes", "weight": "4", "sourceLabel": "Valek", "targetLabel": "Thaïs d'Escufon"}, {"source": "21", "target": "3", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéo Au comptoir de BV : Baptiste Marchais, Instinct primaire", "weight": "3", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Baptiste Marchais"}, {"source": "21", "target": "3", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relais mutuel", "label": "Différents articles parlant de Baptiste Marchais et relayant ses activités", "weight": "2", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Baptiste Marchais"}, {"source": "21", "target": "22", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relais mutuel", "label": "Par exemple : \"Frontières enquête sur Bally Bagayoko, la gauche hurle au « venin raciste »\"", "weight": "2", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Frontière"}, {"source": "21", "target": "23", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relais mutuel", "label": "Articles défendant La Furia", "weight": "2", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Marsault"}, {"source": "21", "target": "1", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Papacito a plusieurs fois été invité, et a notamment déclaré des propos menaçants envers des journalistes de médiapart et libération sur Boulevard Voltaire en janvier 2021", "weight": "3", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Papacito"}, {"source": "21", "target": "1", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relais mutuel", "label": "Articles défendant La Furia", "weight": "2", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Papacito"}, {"source": "21", "target": "24", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relais mutuel", "label": "Par exemple : \" TV Libertés connaît un succès croissant chaque année, notamment chez les jeunes !\"", "weight": "2", "sourceLabel": "Boulevard Voltaire", "targetLabel": "TVLibertés"}, {"source": "21", "target": "25", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Yves de Kerdrel (directeur de VA) a co-organisé le Rendez-vous de Béziers (mai 2016) avec Robert et Emmanuelle Ménard", "weight": "3", "sourceLabel": "Boulevard Voltaire", "targetLabel": "VA +"}, {"source": "21", "target": "26", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "[L’INVITÉ] : « On est en train de gagner la bataille culturelle » Jeune figure du patriotisme français, le combattant de MMA Hugo Deux incarne cette génération d'influenceurs engagés.", "weight": "3", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Hugo Nemesis Deux"}, {"source": "21", "target": "0", "color": "rgb(70,90,130)", "thickness": 9.0, "type": "Co-Création", "label": "Il y est chroniqueur régulier avec sa propre page auteur ; multiples entretiens : sur l'islam/immigration, sur la crise de la foi, sur le \"bien commun\", portrait de lui comme \"l'influenceur catholique qui monte\"", "weight": "5", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "21", "target": "27", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Entretien : \"Pierre-Yves Rougeyron : « Nous avons un peuple au bord de la dissolution, de l’effondrement social et psychique… »\"", "weight": "3", "sourceLabel": "Boulevard Voltaire", "targetLabel": "Cercle Aristote"}, {"source": "22", "target": "3", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Vidéo frontière : \"Rochedy, Marchais, Marsault, Tabibian, Le Doc.. ILS ÉTAIENT LÀ !\"", "weight": "4", "sourceLabel": "Frontière", "targetLabel": "Baptiste Marchais"}, {"source": "22", "target": "29", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Vidéo frontière : \"Rochedy, Marchais, Marsault, Tabibian, Le Doc.. ILS ÉTAIENT LÀ !\"", "weight": "4", "sourceLabel": "Frontière", "targetLabel": "Greg Tabibian"}, {"source": "22", "target": "2", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Vidéo frontière : \"Rochedy, Marchais, Marsault, Tabibian, Le Doc.. ILS ÉTAIENT LÀ !\"", "weight": "4", "sourceLabel": "Frontière", "targetLabel": "Julien Rochedy"}, {"source": "22", "target": "30", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Partenariat", "label": "même adresse que Livre noir (ancien nom de Frontière)", "weight": "3", "sourceLabel": "Frontière", "targetLabel": "Omerta"}, {"source": "22", "target": "24", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "co-interviews, partage de contenus", "weight": "4", "sourceLabel": "Frontière", "targetLabel": "TVLibertés"}, {"source": "22", "target": "0", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéo : Abbé Matthieu Raffray : Comment vivre dans une société déchristianisée ?", "weight": "4", "sourceLabel": "Frontière", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "22", "target": "1", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relai", "label": "Défense de sa revue La Furia : \"Censure de La Furia : tentative de faire mourir une revue sans l’interdire\"", "weight": "2", "sourceLabel": "Frontière", "targetLabel": "Papacito"}, {"source": "22", "target": "19", "color": "rgb(70,90,130)", "thickness": 0.6, "type": "Mention negative", "label": "Critique du climatoscepticisme du Raptor : \"Le Raptor contre l'écologie\"", "weight": "1", "sourceLabel": "Frontière", "targetLabel": "Le Raptor"}, {"source": "22", "target": "7", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Le 14 Octobre 2024 : \"Thaïs d'Escufon et Samuel Lafont invités du Réveil des Idées\"", "weight": "4", "sourceLabel": "Frontière", "targetLabel": "Thaïs d'Escufon"}, {"source": "22", "target": "6", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Relai", "label": "Nombreux articles, notamment \"Alice Cordier du collectif Némésis : « Tout ce que nous voulons, c'est que les femmes françaises retrouvent la paix »\"", "weight": "3", "sourceLabel": "Frontière", "targetLabel": "Alice Cordier"}, {"source": "22", "target": "38", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Invitation à la matinale de Garen \"Ce vendredi 11 octobre retrouvez la matinale de Garen à partir de 8 heures du matin. Petite revue d'effectifs des différents invités présents.  Dans le débat sans frontière Georges Matharan, vidéaste et influenceur de droite sera accompagné de\"", "weight": "4", "sourceLabel": "Frontière", "targetLabel": "Georges Matharan"}, {"source": "22", "target": "33", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relai", "label": "Article sur la suppression de la chaîne de Kroc Blanc : \"La chaîne YouTube de l’influenceur Kroc Blanc supprimée sans avertissement\"", "weight": "2", "sourceLabel": "Frontière", "targetLabel": "Kroc Blanc"}, {"source": "22", "target": "26", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Relai positif", "label": "Article : \"Le combattant de MMA français patriote Hugo Deux s’impose par TKO au KSW et rend hommage à Quentin Deranque\"", "weight": "3", "sourceLabel": "Frontière", "targetLabel": "Hugo Nemesis Deux"}, {"source": "23", "target": "3", "color": "rgb(192,32,32)", "thickness": 4.8, "type": "Événement commun", "label": "Vidéo frontière : \"Rochedy, Marchais, Marsault, Tabibian, Le Doc.. ILS ÉTAIENT LÀ !\"", "weight": "3", "sourceLabel": "Marsault", "targetLabel": "Baptiste Marchais"}, {"source": "23", "target": "38", "color": "rgb(192,32,32)", "thickness": 4.8, "type": "Événement commun", "label": "Vidéo commune chez Frontière", "weight": "3", "sourceLabel": "Marsault", "targetLabel": "Georges Matharan"}, {"source": "23", "target": "2", "color": "rgb(192,32,32)", "thickness": 4.8, "type": "Événement commun", "label": "Vidéo frontière : \"Rochedy, Marchais, Marsault, Tabibian, Le Doc.. ILS ÉTAIENT LÀ !\"", "weight": "3", "sourceLabel": "Marsault", "targetLabel": "Julien Rochedy"}, {"source": "23", "target": "1", "color": "rgb(192,32,32)", "thickness": 9.0, "type": "Co-Création", "label": "BD Dino Brutal Age", "weight": "5", "sourceLabel": "Marsault", "targetLabel": "Papacito"}, {"source": "24", "target": "27", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Pierre-Yves Rougeyron (président du Cercle Aristote) est régulièrement invité sur TVL pour des débats", "weight": "4", "sourceLabel": "TVLibertés", "targetLabel": "Cercle Aristote"}, {"source": "24", "target": "22", "color": "rgb(70,90,130)", "thickness": 0.6, "type": "Invités partagés, Thèmes communs", "label": "", "weight": "1", "sourceLabel": "TVLibertés", "targetLabel": "Frontière"}, {"source": "24", "target": "19", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéos de présentation du raptor etc...", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Le Raptor"}, {"source": "24", "target": "1", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Papacito est invité régulièrement sur les plateaux de TV libertés", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Papacito"}, {"source": "24", "target": "0", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéo : Je porte un catholicisme fier, identitaire, décomplexé ! - Le Zoom - Abbé Matthieu Raffray - TVL", "weight": "4", "sourceLabel": "TVLibertés", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "24", "target": "2", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitations", "label": "Nombreuses invitations : \"Bistro Libertés avec Julien Rochedy - Racailles, wokisme : non à la soumission\" -  \"Grand Angle Exclusif : L’identité en panne ? (Rochedy, Le Gallou, Vardon, Marty)\" - \"Zoom - Julien Rochedy : Existe-t-il une pensée de droite ?\" etc etc...", "weight": "4", "sourceLabel": "TVLibertés", "targetLabel": "Julien Rochedy"}, {"source": "24", "target": "3", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitations", "label": "Nombreuses invitations : \"Zoom - Baptiste Marchais (BENCH&CIGARS) Retrouvez l’instinct primaire !\" -  \"Zoom exclusif : Baptiste Marchais : \"Si la France renaît… ce sera dans le sang !\".. etc etc", "weight": "4", "sourceLabel": "TVLibertés", "targetLabel": "Baptiste Marchais"}, {"source": "24", "target": "7", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitations", "label": "Vidéos : \"La loi du silence - Thaïs d'Escufon séquestrée et agressée (Présent)\" etc etc..", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Thaïs d'Escufon"}, {"source": "24", "target": "31", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "invitations", "label": "Vidéos : \"Bistro Libertés : Le 24 avril, peut-on échapper au grand embrasement ?\" etc etc..", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Stéphane Édouard"}, {"source": "24", "target": "39", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Vidéo : « Faut-il démanteler la police française ? ». Greg Toussaint se paye Médiapart", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Greg Toussaint"}, {"source": "24", "target": "6", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Intervient dans l'émission \"BISTRO LIBERTÉS\"", "weight": "4", "sourceLabel": "TVLibertés", "targetLabel": "Alice Cordier"}, {"source": "24", "target": "26", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Invité dans l'émission \"BISTRO LIBERTÉS\" du 04/02/2026", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Hugo Nemesis Deux"}, {"source": "24", "target": "29", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Intervient dans l'émission \"BISTRO LIBERTÉS\"", "weight": "4", "sourceLabel": "TVLibertés", "targetLabel": "Greg Tabibian"}, {"source": "24", "target": "23", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitations", "label": "Vidéos : \"Zoom - Laurent Obertone et Marsault : Face à la censure, La Furia se rebelle\" + \"Marsault et Laurent Obertone déchainent \"La Furia\" ! - Zoom\" etc etc", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Marsault"}, {"source": "24", "target": "37", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéo : \"Alerte Générale - \"On tue l’agriculture française\" : Tatiana Ventôse balance tout !\"", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Tatiana Ventôse"}, {"source": "24", "target": "30", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéo : \"Chocs du Monde avec Charles d'Anjou - Russie/Ukraine : les deux camps veulent une victoire décisive\" où Edouard Chanot reçoit Charles d’Anjou, fondateur du média Omerta.", "weight": "3", "sourceLabel": "TVLibertés", "targetLabel": "Omerta"}, {"source": "25", "target": "2", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Julien Rochedy répond au Raptor sur VA +", "weight": "3", "sourceLabel": "VA +", "targetLabel": "Julien Rochedy"}, {"source": "25", "target": "2", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Interviewé par VA+", "weight": "4", "sourceLabel": "VA +", "targetLabel": "Julien Rochedy"}, {"source": "25", "target": "19", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Mention Commune", "label": "Julien Rochedy répond au Raptor sur VA +", "weight": "2", "sourceLabel": "VA +", "targetLabel": "Le Raptor"}, {"source": "25", "target": "1", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Interviewé par VA à l’occasion de la sortie de son livre \"Expédition punitive\" (2020) + Vidéo \"TOP 10 punchlines\"", "weight": "4", "sourceLabel": "VA +", "targetLabel": "Papacito"}, {"source": "25", "target": "1", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "collaboration", "label": "Vidéo \"TOP 10 punchlines\"", "weight": "3", "sourceLabel": "VA +", "targetLabel": "Papacito"}, {"source": "25", "target": "3", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "collaboration", "label": "Nombeuses vidéos : \"Le VISA de Baptiste Marchais\" - \"Baptiste Marchais : \"L'histoire de France, c'est Game of Thrones fois 1000 !\"\"...", "weight": "4", "sourceLabel": "VA +", "targetLabel": "Baptiste Marchais"}, {"source": "25", "target": "24", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Citations, relai d’articles", "label": "", "weight": "2", "sourceLabel": "VA +", "targetLabel": "TVLibertés"}, {"source": "25", "target": "26", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéo : \"Hugo Deux se livre sans détour pour VA+ : sa conversion au catholicisme, l’importance de la foi dans sa vie, et une vision assumée de l’identité française comme héritage culturel et spirituel\"", "weight": "4", "sourceLabel": "VA +", "targetLabel": "Hugo Nemesis Deux"}, {"source": "25", "target": "0", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Apparition dans la vidéo : La société a-t-elle encore besoin de Dieu ?", "weight": "3", "sourceLabel": "VA +", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "25", "target": "7", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Vidéos : \"Thaïs d'Escufon, militante identitaire\" - \"internet serait-il de droite ? ft. ‪@ThaisdEscufonYT‬, ‪@JsuispascontentTV‬ et ‪@LaChaineDeGeorges‬\" etc etc...", "weight": "4", "sourceLabel": "VA +", "targetLabel": "Thaïs d'Escufon"}, {"source": "25", "target": "29", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Vidéo :  \"internet serait-il de droite ? ft. ‪@ThaisdEscufonYT‬, ‪@JsuispascontentTV‬ et ‪@LaChaineDeGeorges‬\"... + vidéo \" Les BURKINIS dans ta piscine & les LGBT s’en prennent aux GUEYE [LE DIRECT]\" avec Alice Cordier et Greg Tabibian", "weight": "3", "sourceLabel": "VA +", "targetLabel": "Greg Tabibian"}, {"source": "25", "target": "38", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Vidéos comme \"\"internet serait-il de droite ? ft. ‪@ThaisdEscufonYT‬, ‪@JsuispascontentTV‬ et ‪@LaChaineDeGeorges‬\"...", "weight": "3", "sourceLabel": "VA +", "targetLabel": "Georges Matharan"}, {"source": "25", "target": "6", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Grand nombre de vidéos comme \"Quentin, LFI, Jeune Garde, agressions : Alice Cordier balance tout\"...", "weight": "4", "sourceLabel": "VA +", "targetLabel": "Alice Cordier"}, {"source": "25", "target": "23", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéos : \"Marsault nous donne un cours de dessin !\" , \" \"La Furia\", nouvelle revue explosive\", \"rochedy et marsault : feminisme, abad, pap ndiaye...\"", "weight": "4", "sourceLabel": "VA +", "targetLabel": "Marsault"}, {"source": "25", "target": "18", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéo : \"L'héritage brille de partout\" Simon Bavastro (barbare civilisé)", "weight": "3", "sourceLabel": "VA +", "targetLabel": "Barbare civilisé"}, {"source": "25", "target": "46", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéo : \"La Cartouche : \"Les jeunes de banlieue consomment ce qu'on leur donne\"", "weight": "3", "sourceLabel": "VA +", "targetLabel": "Ralph Muller"}, {"source": "26", "target": "32", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Collaboration", "label": "Ancien membre des Braves", "weight": "3", "sourceLabel": "Hugo Nemesis Deux", "targetLabel": "Daniel Conversano"}, {"source": "26", "target": "2", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Collaboration", "label": "Client via Nemesis Coaching", "weight": "3", "sourceLabel": "Hugo Nemesis Deux", "targetLabel": "Julien Rochedy"}, {"source": "27", "target": "6", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "Vidéo :  La transidentité en débat : Alice Cordier (collectif Némésis) face à Marie Cau (Maire transgenre)", "weight": "4", "sourceLabel": "Cercle Aristote", "targetLabel": "Alice Cordier"}, {"source": "27", "target": "29", "color": "rgb(70,90,130)", "thickness": 9.0, "type": "Invitation", "label": "invités dans de multiples vidéos sur le Cercle Aristote", "weight": "5", "sourceLabel": "Cercle Aristote", "targetLabel": "Greg Tabibian"}, {"source": "27", "target": "30", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Lien idéologique", "label": "Romain Bessonnet (cofondateur du Cercle Aristote) est un agent d’influence pro-russe, proche des milieux d’Omerta", "weight": "2", "sourceLabel": "Cercle Aristote", "targetLabel": "Omerta"}, {"source": "27", "target": "1", "color": "rgb(70,90,130)", "thickness": 9.0, "type": "Invitation", "label": "invités dans de multiples vidéos sur le Cercle Aristote", "weight": "5", "sourceLabel": "Cercle Aristote", "targetLabel": "Papacito"}, {"source": "27", "target": "31", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitation", "label": "vidéo Sexe, Genre, Race : l'explosion horizontale de la société avec Stéphane Edouard (VCPYR! #10)", "weight": "4", "sourceLabel": "Cercle Aristote", "targetLabel": "Stéphane Édouard"}, {"source": "27", "target": "24", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Citations, relai d’articles", "label": "", "weight": "2", "sourceLabel": "Cercle Aristote", "targetLabel": "TVLibertés"}, {"source": "27", "target": "0", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "\"Renouveau spirituel en France : l'Abbé Matthieu Raffray au Cercle Aristote\" (octobre 2025)", "weight": "4", "sourceLabel": "Cercle Aristote", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "28", "target": "4", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention Commune", "label": "Vidéo BRYANFORREAL VS ALEX HITCHENS VS 4 FÉMINISTES", "weight": "2", "sourceLabel": "BryanforReal", "targetLabel": "Alex Hitchens"}, {"source": "29", "target": "3", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Événement commun", "label": "Vidéo frontière : \"Rochedy, Marchais, Marsault, Tabibian, Le Doc.. ILS ÉTAIENT LÀ !\"", "weight": "3", "sourceLabel": "Greg Tabibian", "targetLabel": "Baptiste Marchais"}, {"source": "29", "target": "27", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Invitation", "label": "Vidéo TOP 10 des plus gros TRAITRES à la FRANCE depuis Pétain ! (avec P.Y. Rougeyron)", "weight": "4", "sourceLabel": "Greg Tabibian", "targetLabel": "Cercle Aristote"}, {"source": "29", "target": "2", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Événement commun", "label": "Vidéo frontière : \"Rochedy, Marchais, Marsault, Tabibian, Le Doc.. ILS ÉTAIENT LÀ !\"", "weight": "3", "sourceLabel": "Greg Tabibian", "targetLabel": "Julien Rochedy"}, {"source": "29", "target": "23", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Événement commun", "label": "Vidéo frontière : \"Rochedy, Marchais, Marsault, Tabibian, Le Doc.. ILS ÉTAIENT LÀ !\"", "weight": "3", "sourceLabel": "Greg Tabibian", "targetLabel": "Marsault"}, {"source": "29", "target": "37", "color": "rgb(230,126,34)", "thickness": 9.0, "type": "Co-Création", "label": "livre \"Jusqu'ici tout va (très) mal\"", "weight": "5", "sourceLabel": "Greg Tabibian", "targetLabel": "Tatiana Ventôse"}, {"source": "30", "target": "21", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relais mutuel", "label": "Relais des sondages d'Omerta...", "weight": "2", "sourceLabel": "Omerta", "targetLabel": "Boulevard Voltaire"}, {"source": "30", "target": "27", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Pierre-Yves Rougeyron (fondateur) invité sur Omerta (\"on sort la hache contre l’occident dégénéré\")", "weight": "3", "sourceLabel": "Omerta", "targetLabel": "Cercle Aristote"}, {"source": "30", "target": "27", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Pierre Yves Rougeyron est un intervenant très régulier de la chaîne Omerta. Entre autres : \"Pierre-Yves Rougeyron : Un label des médias, vraiment ?\", \"P.Y Rougeyron : le mondialisme doit disparaître\" , \"live avec PY Rougeyron 14 Juillet : Les feux de l'amour\" etc etc", "weight": "4", "sourceLabel": "Omerta", "targetLabel": "Cercle Aristote"}, {"source": "30", "target": "22", "color": "rgb(70,90,130)", "thickness": 9.0, "type": "Lien structurel", "label": "Erik Tegnér (Frontières) et Omerta partagent la même adresse légale + Tentative de fusion en 2023 (échec)", "weight": "5", "sourceLabel": "Omerta", "targetLabel": "Frontière"}, {"source": "30", "target": "24", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Martial Bild (fondateur de TVLibertés) interviewé par Omerta (\"ILS NE VEULENT PAS DE MÉDIAS ALTERNATIFS POUR 2027\")", "weight": "3", "sourceLabel": "Omerta", "targetLabel": "TVLibertés"}, {"source": "30", "target": "25", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relais mutuel", "label": "Relais des sondages d'Omerta...", "weight": "2", "sourceLabel": "Omerta", "targetLabel": "VA +"}, {"source": "30", "target": "0", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéo : ABBÉ RAFFRAY : \"ÊTRE CATHOLIQUE C'EST TENDANCE\"", "weight": "4", "sourceLabel": "Omerta", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "30", "target": "0", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Vidéo  \"ABBÉ RAFFRAY : \"ÊTRE CATHOLIQUE C'EST TENDANCE\"\"", "weight": "3", "sourceLabel": "Omerta", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "30", "target": "29", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "vidéo : GREG TABIBIAN : \"LES ÉLITES CRAIGNENT LE PEUPLE !\"", "weight": "3", "sourceLabel": "Omerta", "targetLabel": "Greg Tabibian"}, {"source": "30", "target": "2", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitations", "label": "Vidéos : 'Julien Rochedy : Identité interdite ?\" etc etc...", "weight": "3", "sourceLabel": "Omerta", "targetLabel": "Julien Rochedy"}, {"source": "30", "target": "5", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéo : \"La Menace, \"L'État détruit la masculinité\"", "weight": "3", "sourceLabel": "Omerta", "targetLabel": "La Menace"}, {"source": "30", "target": "38", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéo : \"Georges Jordi : “Louis Boyard harcèle un étudiant, qui se suicide !” Moments Forts du 04/04/2023\"", "weight": "3", "sourceLabel": "Omerta", "targetLabel": "Georges Matharan"}, {"source": "30", "target": "26", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Invitation", "label": "Vidéo \"Le combat d'être français\"", "weight": "3", "sourceLabel": "Omerta", "targetLabel": "Hugo Nemesis Deux"}, {"source": "31", "target": "7", "color": "rgb(230,126,34)", "thickness": 9.0, "type": "Co-Création", "label": "Création de contenus payants (séminaires, vidéos communes)", "weight": "5", "sourceLabel": "Stéphane Édouard", "targetLabel": "Thaïs d'Escufon"}, {"source": "32", "target": "3", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention Commune", "label": "", "weight": "2", "sourceLabel": "Daniel Conversano", "targetLabel": "Baptiste Marchais"}, {"source": "32", "target": "16", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention Commune", "label": "", "weight": "2", "sourceLabel": "Daniel Conversano", "targetLabel": "Le Guiz"}, {"source": "32", "target": "1", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention Commune", "label": "", "weight": "2", "sourceLabel": "Daniel Conversano", "targetLabel": "Papacito"}, {"source": "33", "target": "3", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Kroc Blanc", "targetLabel": "Baptiste Marchais"}, {"source": "33", "target": "32", "color": "rgb(192,32,32)", "thickness": 4.8, "type": "Collaboration", "label": "Membre de Suavelos (devenu Les braves)", "weight": "3", "sourceLabel": "Kroc Blanc", "targetLabel": "Daniel Conversano"}, {"source": "33", "target": "2", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Kroc Blanc", "targetLabel": "Julien Rochedy"}, {"source": "33", "target": "19", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Kroc Blanc", "targetLabel": "Le Raptor"}, {"source": "33", "target": "1", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Kroc Blanc", "targetLabel": "Papacito"}, {"source": "34", "target": "21", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Citations, relai d’articles", "label": "", "weight": "2", "sourceLabel": "FDesouche", "targetLabel": "Boulevard Voltaire"}, {"source": "34", "target": "27", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Invitations de Rougeyron : \"Entretien avec Pierre Yves Rougeyron : Poutine, la Russie et la Chine\"  + \"Pierre-Yves Rougeyron sur la crise des représentations\" etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Cercle Aristote"}, {"source": "34", "target": "23", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Relai", "label": "Relai de son journal la furia", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Marsault"}, {"source": "34", "target": "1", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Relai", "label": "Relai de son journal la furia", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Papacito"}, {"source": "34", "target": "24", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Relai mutuel de contenus", "label": "", "weight": "2", "sourceLabel": "FDesouche", "targetLabel": "TVLibertés"}, {"source": "34", "target": "25", "color": "rgb(70,90,130)", "thickness": 0.6, "type": "Relai de contenu", "label": "", "weight": "1", "sourceLabel": "FDesouche", "targetLabel": "VA +"}, {"source": "34", "target": "19", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Relais", "label": "Plusieurs articles sur le raptor :  \"Le Raptor Dissident : “Malika LePen : Femme de Gauche”\" ; L’Arcom juge recevable une saisine contre le podca\"st du Raptor, une première pour un format exclusivement...\" etc etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Le Raptor"}, {"source": "34", "target": "35", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Plusieurs articles : \"Boyard contre Bolloré : l’analyse du Lapin du Futur\" + \"Lapin Du Futur : Lupin du futur\"  etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Lapin du Futur"}, {"source": "34", "target": "2", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Plusieurs apparitions : \"Identité, culture, grandeur… Julien Rochedy invité de La Libraire Africaine afin de parler de son dernier livre...\" + \"« Surhommes et sous-hommes, valeur et destin de l’homme » : Julien Rochedy présente son nouveau livre\" etc etc", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Julien Rochedy"}, {"source": "34", "target": "20", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Plusieurs invitations : \"Valek : « Les journalistes me détestent »\" + \"Valek – Le fameux privilège\" + \"Valek : “justice pour Théo”\" etc etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Valek"}, {"source": "34", "target": "7", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Relais", "label": "Plusieurs articles : \"Thais d’Escufon sur BFM pour parler des viols de rue (MàJ : La DILCRAH saisit le Procureur de la...\" Etc etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Thaïs d'Escufon"}, {"source": "34", "target": "31", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Plusieurs apparitions : \"Stéphane Edouard : “Les progressistes finiront cocus du monde qu’ils auront eux-même érigé”\" + \"Le sociologue Stéphane Édouard analyse le parcours “difficile” d’Yseult (Vidéo)\" etc etc..", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Stéphane Édouard"}, {"source": "34", "target": "6", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Relais", "label": "\"Alice Cordier annonce 120 plaintes visant des responsables LFI dont Jean-Luc Mélenchon après des...\" + \"Alice Cordier à Thomas Portes : “pourquoi avoir maintenu la candidature de Raphaël Arnault qui a...\" etc etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Alice Cordier"}, {"source": "34", "target": "33", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Relais", "label": "Plusieurs articles : \"Après la suppression de FdeNews sur YouTube, Kroc Blanc annonce une prise de parole en direct ce soir à...\" + \"BoursoBank ferme les comptes de l’influenceur de droite Kroc Blanc et de toute sa famille\" + \"Nouveau clip synthwave de Kroc Blanc en collaboration avec SpaceDuster\" etc etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Kroc Blanc"}, {"source": "34", "target": "26", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "\"Hugo Deux, combattant MMA : “C’est un milieu identitaire, nationaliste et la plupart du temps religieux… tel 90% des peuples de la planète. Mais pour les gauchistes, il est interdit de penser comme ça si vous êtes blanc, catholique ou Français de souche”\" etc etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Hugo Nemesis Deux"}, {"source": "34", "target": "36", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Mentions positives", "label": "Articles positifs sur lui : \"Accusé d’être d’« extrême-droite », Tibo InShape sort une vidéo où il parle politique : s’ouvrir à la...\" + \"Tibo InShape : ”En tant qu’artiste ou créateur de contenu, il est souvent plus facile d’affirmer un vote à...\" etc etc..", "weight": "2", "sourceLabel": "FDesouche", "targetLabel": "Tibo Inshape"}, {"source": "34", "target": "37", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Vidéos : Tatiana Ventôse : “Pourquoi j’ai quitté la gauche” + \"Tatiana Ventôse : “comment les islamistes manipulent les honnêtes gens”\" etc...", "weight": "3", "sourceLabel": "FDesouche", "targetLabel": "Tatiana Ventôse"}, {"source": "34", "target": "18", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Collaboration", "label": "Vidéo : \"Barbare Civilisé : “Le Rap et le White Privilege”\"", "weight": "2", "sourceLabel": "FDesouche", "targetLabel": "Barbare civilisé"}, {"source": "35", "target": "19", "color": "rgb(230,126,34)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Lapin du Futur", "targetLabel": "Le Raptor"}, {"source": "35", "target": "1", "color": "rgb(230,126,34)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Lapin du Futur", "targetLabel": "Papacito"}, {"source": "37", "target": "19", "color": "rgb(26,122,44)", "thickness": 0.6, "type": "Mention negative", "label": "se moquait de sa proximité avec l'extrême droite raciste dès 2017", "weight": "1", "sourceLabel": "Tatiana Ventôse", "targetLabel": "Le Raptor"}, {"source": "38", "target": "1", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Co-animation", "label": "Vidéo \"Le paysan, le Maire et le Lord\"", "weight": "4", "sourceLabel": "Georges Matharan", "targetLabel": "Papacito"}, {"source": "38", "target": "1", "color": "rgb(230,126,34)", "thickness": 4.8, "type": "Événement commun", "label": "Condamnés ensemble pour injure publique contre une journaliste de Mediapart", "weight": "3", "sourceLabel": "Georges Matharan", "targetLabel": "Papacito"}, {"source": "39", "target": "19", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Greg Toussaint", "targetLabel": "Le Raptor"}, {"source": "39", "target": "1", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Greg Toussaint", "targetLabel": "Papacito"}, {"source": "39", "target": "31", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "même écosystème idéologique", "label": "", "weight": "1", "sourceLabel": "Greg Toussaint", "targetLabel": "Stéphane Édouard"}, {"source": "39", "target": "20", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention commune", "label": "", "weight": "2", "sourceLabel": "Greg Toussaint", "targetLabel": "Valek"}, {"source": "40", "target": "10", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention positive", "label": "Tiktok où il vante l'intelligence de Yomi Denzel", "weight": "1", "sourceLabel": "Hamza Yacoubi", "targetLabel": "Yomi Denzel"}, {"source": "41", "target": "20", "color": "rgb(241,196,15)", "thickness": 2.7, "type": "Mention Commune", "label": "cité sur le site onch", "weight": "2", "sourceLabel": "Jean-Onch le Musclay", "targetLabel": "Valek"}, {"source": "42", "target": "29", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Collaboration", "label": "Tatiana Ventôse collabore régulièrement avec Greg Tabibian", "weight": "4", "sourceLabel": "Le Fil d'Actu", "targetLabel": "Greg Tabibian"}, {"source": "42", "target": "37", "color": "rgb(70,90,130)", "thickness": 9.0, "type": "Création", "label": "Fondatrice du média", "weight": "5", "sourceLabel": "Le Fil d'Actu", "targetLabel": "Tatiana Ventôse"}, {"source": "43", "target": "38", "color": "rgb(241,196,15)", "thickness": 6.9, "type": "Invitation", "label": "invité sur ses vidéos", "weight": "4", "sourceLabel": "Le Hussard", "targetLabel": "Georges Matharan"}, {"source": "43", "target": "19", "color": "rgb(241,196,15)", "thickness": 0.6, "type": "Forte inspiration", "label": "Son contenu est directement inspiré de l'esthétique de celui du Raptor", "weight": "1", "sourceLabel": "Le Hussard", "targetLabel": "Le Raptor"}, {"source": "43", "target": "1", "color": "rgb(241,196,15)", "thickness": 6.9, "type": "Invitation", "label": "invité sur ses vidéos", "weight": "4", "sourceLabel": "Le Hussard", "targetLabel": "Papacito"}, {"source": "43", "target": "17", "color": "rgb(241,196,15)", "thickness": 6.9, "type": "Invitation", "label": "invité sur ses vidéos", "weight": "4", "sourceLabel": "Le Hussard", "targetLabel": "Psyhodélik"}, {"source": "44", "target": "1", "color": "rgb(241,196,15)", "thickness": 0.6, "type": "Mention positive", "label": "Revendique s'inspirer des punchlines de Papacito", "weight": "1", "sourceLabel": "Les Philogynes", "targetLabel": "Papacito"}, {"source": "45", "target": "9", "color": "rgb(133,187,63)", "thickness": 9.0, "type": "Co-Création", "label": "Podcast \"Sans Permission\" en commun", "weight": "5", "sourceLabel": "Oussama Ammar", "targetLabel": "Antoine Blanco"}, {"source": "45", "target": "10", "color": "rgb(133,187,63)", "thickness": 9.0, "type": "Co-Création", "label": "Podcast \"Sans Permission\" en commun", "weight": "5", "sourceLabel": "Oussama Ammar", "targetLabel": "Yomi Denzel"}, {"source": "45", "target": "19", "color": "rgb(133,187,63)", "thickness": 6.9, "type": "Invitation", "label": "invitation lors d'une émission du Podcast \"Sans Permission\"", "weight": "4", "sourceLabel": "Oussama Ammar", "targetLabel": "Le Raptor"}, {"source": "45", "target": "15", "color": "rgb(133,187,63)", "thickness": 4.8, "type": "Événement commun", "label": "Débat sur la chaine d'Oussama Ammar vs El Rayhan", "weight": "3", "sourceLabel": "Oussama Ammar", "targetLabel": "El Rayhan"}, {"source": "45", "target": "7", "color": "rgb(133,187,63)", "thickness": 6.9, "type": "Collaboration", "label": "Antoine Blanco et Oussama Ammar se sont rendus sur la chaîne de Thaïs d’Escufon", "weight": "4", "sourceLabel": "Oussama Ammar", "targetLabel": "Thaïs d'Escufon"}, {"source": "45", "target": "11", "color": "rgb(133,187,63)", "thickness": 9.0, "type": "Co-Création", "label": "Co-Création Podcast \"Sans Permission\"", "weight": "5", "sourceLabel": "Oussama Ammar", "targetLabel": "Podcast \"Sans Permission\""}, {"source": "46", "target": "1", "color": "rgb(241,196,15)", "thickness": 0.6, "type": "Même communauté", "label": "Communauté proche mais Ralph Müller se dit \"instrumentalisé\"", "weight": "1", "sourceLabel": "Ralph Muller", "targetLabel": "Papacito"}, {"source": "47", "target": "13", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention positive", "label": "Soutient à AD Laurent dans ses vidéos", "weight": "1", "sourceLabel": "The ROB", "targetLabel": "AD Laurent"}, {"source": "47", "target": "13", "color": "rgb(192,32,32)", "thickness": 4.8, "type": "Collaboration", "label": "vidéo instagram où ROB coach AD Laurent à Marbela : https://www.instagram.com/reel/DaTIB7wsctw/?igsh=NnppN3MzeG82NXdj", "weight": "3", "sourceLabel": "The ROB", "targetLabel": "AD Laurent"}, {"source": "47", "target": "39", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Invitation", "label": "vidéo \"AUX FRONTIÈRES DE L'HOMOSEXUALITÉ\"", "weight": "4", "sourceLabel": "The ROB", "targetLabel": "Greg Toussaint"}, {"source": "47", "target": "1", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Invitation", "label": "vidéo \"AUX FRONTIÈRES DE L'HOMOSEXUALITÉ\"", "weight": "4", "sourceLabel": "The ROB", "targetLabel": "Papacito"}, {"source": "47", "target": "1", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Invitation", "label": "Interview vérité", "weight": "4", "sourceLabel": "The ROB", "targetLabel": "Papacito"}, {"source": "47", "target": "1", "color": "rgb(192,32,32)", "thickness": 6.9, "type": "Invitation", "label": "Vidéo pourquoi les hommes ne sont plus virils", "weight": "4", "sourceLabel": "The ROB", "targetLabel": "Papacito"}, {"source": "47", "target": "36", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention positive", "label": "Soutient dans ses vidéos", "weight": "1", "sourceLabel": "The ROB", "targetLabel": "Tibo Inshape"}, {"source": "48", "target": "13", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Collaboration", "label": "Interviews", "weight": "4", "sourceLabel": "TomsurSnap", "targetLabel": "AD Laurent"}, {"source": "48", "target": "8", "color": "rgb(230,126,34)", "thickness": 9.0, "type": "Co-Création", "label": "Duo récurrent, interviews, sketchs...", "weight": "5", "sourceLabel": "TomsurSnap", "targetLabel": "Anthony Sirius"}, {"source": "49", "target": "4", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention negative", "label": "Vidéo où il critique La Menace, Hitchens et AD Laurent : Masculinité Raffinée VS coachs escrocs", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "Alex Hitchens"}, {"source": "49", "target": "31", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mentions", "label": "Vidéo où il note physiquement Hitchens et Edouard : VOS COACHS EN SÉDUCTION SONT-ILS SÉDUISANTS ? Alex Hitchens, Stéphane Edouard, Sebastien Espinoza..", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "Stéphane Édouard"}, {"source": "49", "target": "19", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention negative", "label": "Vidéo \"le raptor veut vous peigner\"", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "Le Raptor"}, {"source": "49", "target": "1", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention", "label": "", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "Papacito"}, {"source": "49", "target": "20", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention", "label": "Vidéo \"le raptor veut vous peigner\"", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "Valek"}, {"source": "49", "target": "7", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention negative", "label": "Vidéo où il parle de Thais Escufon et Alice Cordier : Thaïs d'Escufon CONTRE Alice Cordier : duel girly de la droitosphère", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "Thaïs d'Escufon"}, {"source": "49", "target": "6", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention negative", "label": "Vidéo où il parle de Thais Escufon et Alice Cordier : Thaïs d'Escufon CONTRE Alice Cordier : duel girly de la droitosphère", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "Alice Cordier"}, {"source": "49", "target": "13", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention negative", "label": "Vidéo où il critique La Menace, Hitchens et AD Laurent : Masculinité Raffinée VS coachs escrocs", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "AD Laurent"}, {"source": "49", "target": "5", "color": "rgb(133,187,63)", "thickness": 0.6, "type": "Mention negative", "label": "Vidéo où il critique La Menace, Hitchens et AD Laurent : Masculinité Raffinée VS coachs escrocs", "weight": "1", "sourceLabel": "Le Philosef", "targetLabel": "La Menace"}, {"source": "49", "target": "44", "color": "rgb(133,187,63)", "thickness": 6.9, "type": "Collaboration", "label": "vidéo :  LE POLYAMOUR. Feat. Les Philogynes. Es-tu Polyamoureux ?", "weight": "4", "sourceLabel": "Le Philosef", "targetLabel": "Les Philogynes"}, {"source": "49", "target": "18", "color": "rgb(133,187,63)", "thickness": 6.9, "type": "Collaboration", "label": "Vidéo : l’art est il le beau Feat Barbare Civilisé", "weight": "4", "sourceLabel": "Le Philosef", "targetLabel": "Barbare civilisé"}, {"source": "50", "target": "16", "color": "rgb(133,187,63)", "thickness": 6.9, "type": "Collaboration", "label": "Invité sur la chaîne", "weight": "4", "sourceLabel": "Oseille TV", "targetLabel": "Le Guiz"}, {"source": "51", "target": "7", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mentions", "label": "Deux vidéos sur Thaïs d'Escufon :  THAÏS VA ALLER EN PRISON ET C'EST MÉRITÉ ? +  THAIS EST MISOG*NE ???", "weight": "2", "sourceLabel": "Golden Boy", "targetLabel": "Thaïs d'Escufon"}, {"source": "51", "target": "15", "color": "rgb(192,32,32)", "thickness": 4.8, "type": "Mentions", "label": "Trois vidéos réaction aux micros trottoir d'El Rayhan : DES FEMINISTES FOLLES SAVENT PAS DIFFÉRENCIER UN HOMME ET UNE FEMME + La Police Est Vraiment Problématique ? + La Culture Française N'existe Plus ?", "weight": "3", "sourceLabel": "Golden Boy", "targetLabel": "El Rayhan"}, {"source": "52", "target": "33", "color": "rgb(230,126,34)", "thickness": 6.9, "type": "Collaboration", "label": "DIALEKTIK (Chronic & MadThink) \"Hippocrate Aux Enfers\" (Ft. Kroc Blanc)", "weight": "4", "sourceLabel": "CHRØNIC", "targetLabel": "Kroc Blanc"}, {"source": "52", "target": "7", "color": "rgb(230,126,34)", "thickness": 0.6, "type": "Mention négative", "label": "THAÏS D'ESCUFON NOUS A MENTI ET JE LE PROUVE (Vidéo à l'appui)", "weight": "1", "sourceLabel": "CHRØNIC", "targetLabel": "Thaïs d'Escufon"}, {"source": "53", "target": "5", "color": "rgb(241,196,15)", "thickness": 2.7, "type": "Collaboration", "label": "Tiktok de comparaison des métros russes VS métros français : https://www.tiktok.com/@daniillerusse/video/7352939173277355296", "weight": "2", "sourceLabel": "Daniil Le Russe", "targetLabel": "La Menace"}, {"source": "54", "target": "2", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Invitations", "label": "Différents entretiens avec Julien Rochedy : \"vive la civilisation européenne : qui sont les blancs ?\" - \"rendez-vous avec Julien Rochedy; rendez-vous de la réinformation\"...", "weight": "4", "sourceLabel": "Radio Courtoisie", "targetLabel": "Julien Rochedy"}, {"source": "54", "target": "3", "color": "rgb(70,90,130)", "thickness": 2.7, "type": "Collaboration", "label": "Sur l'épisode du 11 novembre 2022 de la \"dernière ligne droite\" : \"Vu de haut : Instinct Primaire Avec Baptiste Marchais, champion de France et champion d’Europe de développé couché, créateur de la chaîne YouTube Bench&Cigars, auteur du livre Instinct Primaire aux éditions Hétairie\"", "weight": "2", "sourceLabel": "Radio Courtoisie", "targetLabel": "Baptiste Marchais"}, {"source": "54", "target": "7", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "Nombreux articles notamment sur son procès, \"thaïs d'escufon échappe de peu à la prison : retour sur un procès hors norme\"", "weight": "3", "sourceLabel": "Radio Courtoisie", "targetLabel": "Thaïs d'Escufon"}, {"source": "54", "target": "31", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "Collaboration", "label": "article du 20 Juin 2026 : \"LIBRE JOURNAL D’HUGUES SÉRAPION DU 20 JUIN 2026 : « L’AFFAIRE ERNOTTE-FRANCE TV ; PENSER NOTRE MONDE ET COMPRENDRE LES AUTRES POUR VIVRE AVEC SAGESSE AVEC STÉPHANE EDOUARD, ESSAYISTE ET VIDÉASTE »\"", "weight": "3", "sourceLabel": "Radio Courtoisie", "targetLabel": "Stéphane Édouard"}, {"source": "54", "target": "6", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "collaboration", "label": "Très grand nombre d'article sur Alice Cordier et ses actions + a eu sa propre émission", "weight": "4", "sourceLabel": "Radio Courtoisie", "targetLabel": "Alice Cordier"}, {"source": "54", "target": "38", "color": "rgb(70,90,130)", "thickness": 4.8, "type": "collaboration", "label": "Articles comme : \"YOUTUBE : POURQUOI LA DROITE EST EN TRAIN DE PERDRE DU TERRAIN – GEORGES MATHARAN\"", "weight": "3", "sourceLabel": "Radio Courtoisie", "targetLabel": "Georges Matharan"}, {"source": "54", "target": "23", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "collaboration", "label": "Entretien : \"« À FORCE DE FASCISER TOUT LE MONDE, JE VAIS VOUS MONTRER CE QUE C’EST QUE LE FASCISME ! » – MARSAULT\"", "weight": "4", "sourceLabel": "Radio Courtoisie", "targetLabel": "Marsault"}, {"source": "54", "target": "0", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "collaboration", "label": "Entretien : \"« UN CHRÉTIEN QUI SE RÉJOUIT DE L’EXPANSION DE L’ISLAM EST INFIDÈLE AU CHRIST ! » – ABBÉ RAFFRAY\"", "weight": "4", "sourceLabel": "Radio Courtoisie", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "54", "target": "55", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "Lien directionnel", "label": "Henry de Lesquen est l'ancien président de Radio Courtoisie (évincé en 2017) et dirigeant actuel de Radio Athéna", "weight": "4", "sourceLabel": "Radio Courtoisie", "targetLabel": "Radio Athéna"}, {"source": "55", "target": "1", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "collaboration", "label": "Entretien \"Le RDV de la Réaction d'Adrien Abauzit - Papacito\"", "weight": "4", "sourceLabel": "Radio Athéna", "targetLabel": "Papacito"}, {"source": "55", "target": "3", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "collaboration", "label": "Entretien : \"Adrien Abauzit | rencontre avec Baptiste Marchais\"", "weight": "4", "sourceLabel": "Radio Athéna", "targetLabel": "Baptiste Marchais"}, {"source": "55", "target": "27", "color": "rgb(70,90,130)", "thickness": 6.9, "type": "collaboration", "label": "Entretien : \"Henry de Lesquen | P-Y Rougeyron | Souveraineté et identité : la France à la croisée des chemins\"", "weight": "4", "sourceLabel": "Radio Athéna", "targetLabel": "Cercle Aristote"}, {"source": "55", "target": "0", "color": "rgb(70,90,130)", "thickness": 0.6, "type": "Mention negative", "label": "Vidéo : \"Adrien Abauzit | Réponse aux dominicains d'Avrillé et à l'abbé Raffray\"", "weight": "1", "sourceLabel": "Radio Athéna", "targetLabel": "Abbé Matthieu Raffray"}, {"source": "56", "target": "31", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention negative", "label": "Pointe Stéphane Edouard dans un Shorts en confirmant ses propos, en disant qu’il est d’accord avec lui mais mention négative à la base puisqu’il se moque de lui en disant qu’il “défonce des portes ouvertes”  Corda avoue que Stephane Edouard avait raison", "weight": "1", "sourceLabel": "Jean-Marie Cordaro", "targetLabel": "Stéphane Édouard"}, {"source": "56", "target": "7", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention negative", "label": "Critique Thaïs d’Escufon à plusieurs reprises : (13) Thais d'Escufon se fait voler sa formation ??? - YouTube", "weight": "1", "sourceLabel": "Jean-Marie Cordaro", "targetLabel": "Thaïs d'Escufon"}, {"source": "56", "target": "19", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention negative", "label": "Mention négative Le Raptor : Raptor Dissident : Dubaï, Stéroïdes et soirées BDSM, que s'est il passé ?", "weight": "1", "sourceLabel": "Jean-Marie Cordaro", "targetLabel": "Le Raptor"}, {"source": "56", "target": "4", "color": "rgb(192,32,32)", "thickness": 0.6, "type": "Mention negative", "label": "Mention négative d’Alex Hitchens : Alex Hitchen, le DRESSEUR de Féministes", "weight": "1", "sourceLabel": "Jean-Marie Cordaro", "targetLabel": "Alex Hitchens"}, {"source": "56", "target": "5", "color": "rgb(192,32,32)", "thickness": 2.7, "type": "Mention positive", "label": "Mention positive pour La Menace : La Menace se fait balancer par Foufa", "weight": "2", "sourceLabel": "Jean-Marie Cordaro", "targetLabel": "La Menace"}, {"source": "57", "target": "50", "color": "rgb(241,196,15)", "thickness": 6.9, "type": "Co-animation", "label": "Co-anime plusieurs émissions/vidéos de la chaîne", "weight": "4", "sourceLabel": "Charles Dereeper", "targetLabel": "Oseille TV"}]};
+
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs) {
+  const e = document.createElementNS(SVGNS, tag);
+  if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+
+const width = window.innerWidth, height = window.innerHeight;
+const svg = document.getElementById("graph");
+svg.setAttribute("viewBox", `${-width/2} ${-height/2} ${width} ${height}`);
+const viewport = document.getElementById("viewport");
+const linksLayer = document.getElementById("links-layer");
+const nodesLayer = document.getElementById("nodes-layer");
+
+// Resolve edge source/target ids into direct node references
+const nodeById = new Map(DATA.nodes.forEach ? [] : []);
+DATA.nodes.forEach(n => nodeById.set(n.id, n));
+DATA.edges.forEach(e => {
+  e.source = nodeById.get(typeof e.source === "object" ? e.source.id : e.source);
+  e.target = nodeById.get(typeof e.target === "object" ? e.target.id : e.target);
+});
+
+// Give every node a starting velocity
+DATA.nodes.forEach(n => { n.vx = 0; n.vy = 0; n.fx = null; n.fy = null; });
+
+// ---------- Force simulation (vanilla replacement for d3-force) ----------
+let alpha = 0.3;
+let alphaTarget = 0;
+const alphaDecay = 0.05;
+const alphaMin = 0.001;
+const linkDistance = 90, linkStrength = 0.02;
+const chargeStrength = -30;
+const xyStrength = 0.12;
+let simTimer = null;
+
+function tick() {
+  alpha += (alphaTarget - alpha) * alphaDecay;
+
+  // charge (simple O(n^2) repulsion -- fine for ~64 nodes)
+  const nodes = DATA.nodes;
+  for (let i = 0; i < nodes.length; i++) {
+    let fx = 0, fy = 0;
+    const a = nodes[i];
+    for (let j = 0; j < nodes.length; j++) {
+      if (i === j) continue;
+      const b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let distSq = dx*dx + dy*dy;
+      if (distSq < 1) distSq = 1;
+      const dist = Math.sqrt(distSq);
+      const force = (chargeStrength * alpha) / distSq;
+      fx += (dx / dist) * force;
+      fy += (dy / dist) * force;
+    }
+    a.vx += fx;
+    a.vy += fy;
+  }
+
+  // links
+  DATA.edges.forEach(e => {
+    const s = e.source, t = e.target;
+    let dx = t.x - s.x, dy = t.y - s.y;
+    let dist = Math.sqrt(dx*dx + dy*dy) || 1;
+    const diff = (dist - linkDistance) / dist * linkStrength * alpha;
+    const ox = dx * diff, oy = dy * diff;
+    if (s.fx === null) { s.vx += ox; s.vy += oy; }
+    if (t.fx === null) { t.vx -= ox; t.vy -= oy; }
+  });
+
+  // collide (simple relaxation)
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    const ra = a.size + 3;
+    for (let j = i+1; j < nodes.length; j++) {
+      const b = nodes[j];
+      const rb = b.size + 3;
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let dist = Math.sqrt(dx*dx+dy*dy) || 0.01;
+      const minDist = ra + rb;
+      if (dist < minDist) {
+        const overlap = (minDist - dist) / dist * 0.5;
+        const ox = dx * overlap, oy = dy * overlap;
+        if (a.fx === null) { a.vx -= ox; a.vy -= oy; }
+        if (b.fx === null) { b.vx += ox; b.vy += oy; }
+      }
+    }
+  }
+
+  // x/y anchor forces (pull back toward original layout coords)
+  nodes.forEach(n => {
+    if (n.fx === null) n.vx += (n.origX - n.x) * xyStrength * alpha;
+    if (n.fy === null) n.vy += (n.origY - n.y) * xyStrength * alpha;
+  });
+
+  // integrate + velocity decay
+  nodes.forEach(n => {
+    if (n.fx !== null) { n.x = n.fx; n.vx = 0; }
+    else { n.vx *= 0.6; n.x += n.vx; }
+    if (n.fy !== null) { n.y = n.fy; n.vy = 0; }
+    else { n.vy *= 0.6; n.y += n.vy; }
+  });
+
+  render();
+
+  if (alpha > alphaMin) {
+    simTimer = requestAnimationFrame(tick);
+  } else {
+    simTimer = null;
+  }
+}
+function restartSim() {
+  if (!simTimer) simTimer = requestAnimationFrame(tick);
+}
+
+// store original layout coords, init x/y
+DATA.nodes.forEach(n => { n.origX = n.x; n.origY = n.y; });
+
+// ---------- Build DOM ----------
+const linkEls = DATA.edges.map(e => {
+  const line = el("line", {
+    class: "link",
+    stroke: e.color,
+    "stroke-width": Math.max(0.6, e.thickness * 0.5)
+  });
+  line.addEventListener("click", (ev) => { ev.stopPropagation(); showEdgePanel(e); highlightNone(); });
+  linksLayer.appendChild(line);
+  return line;
+});
+linksLayer.setAttribute("stroke-opacity", "0.5");
+
+const nodeEls = DATA.nodes.map(n => {
+  const g = el("g", { class: "node" });
+  const circle = el("circle", {
+    r: n.size,
+    fill: n.color,
+    stroke: n.type === "Média" ? "#ffffff" : (n.community === "-1" ? "#777" : "#0a0a0a"),
+    "stroke-width": n.type === "Média" ? "1.4" : "0.8"
+  });
+  if (n.community === "-1" && n.type !== "Média") circle.setAttribute("stroke-dasharray", "2,2");
+  g.appendChild(circle);
+
+  const text = el("text", {
+    class: "node-label",
+    x: n.size + 4,
+    y: 3,
+    "font-weight": n.size > 30 ? "700" : "400"
+  });
+  text.textContent = n.label;
+  g.appendChild(text);
+
+  makeDraggable(g, n, (clickedNode) => { showNodePanel(clickedNode); highlightNode(clickedNode); });
+  nodesLayer.appendChild(g);
+  return g;
+});
+
+function render() {
+  linkEls.forEach((line, i) => {
+    const e = DATA.edges[i];
+    line.setAttribute("x1", e.source.x); line.setAttribute("y1", e.source.y);
+    line.setAttribute("x2", e.target.x); line.setAttribute("y2", e.target.y);
+  });
+  nodeEls.forEach((g, i) => {
+    const n = DATA.nodes[i];
+    g.setAttribute("transform", `translate(${n.x},${n.y})`);
+  });
+}
+render();
+restartSim();
+
+// ---------- Drag (with click/drag threshold so a plain tap opens the panel) ----------
+const DRAG_THRESHOLD = 4; // px in screen space before a press counts as a drag
+
+function makeDraggable(g, n, onClick) {
+  let downX = 0, downY = 0;
+  let dragging = false;
+
+  function svgPoint(clientX, clientY) {
+    const rect = svg.getBoundingClientRect();
+    const pt = svg.createSVGPoint();
+    pt.x = clientX - rect.left; pt.y = clientY - rect.top;
+    const local = pt.matrixTransform(svg.getScreenCTM().inverse());
+    const inv = viewport.getCTM().inverse();
+    return local.matrixTransform(inv);
+  }
+
+  function clientOf(ev) {
+    const t = ev.touches && ev.touches.length ? ev.touches[0] : ev;
+    return { x: t.clientX, y: t.clientY };
+  }
+
+  function onDown(ev) {
+    ev.stopPropagation();
+    const c = clientOf(ev);
+    downX = c.x; downY = c.y;
+    dragging = false;
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("touchmove", onMove, { passive: false });
+    window.addEventListener("touchend", onUp);
+  }
+
+  function onMove(ev) {
+    const c = clientOf(ev);
+    const dx = c.x - downX, dy = c.y - downY;
+    if (!dragging) {
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return; // still just a tap so far
+      dragging = true;
+      alphaTarget = 0.15;
+      restartSim();
+    }
+    if (ev.touches) ev.preventDefault();
+    const p = svgPoint(c.x, c.y);
+    n.fx = p.x; n.fy = p.y;
+    if (!simTimer) restartSim();
+  }
+
+  function onUp() {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    window.removeEventListener("touchmove", onMove);
+    window.removeEventListener("touchend", onUp);
+    if (dragging) {
+      alphaTarget = 0;
+      n.fx = null; n.fy = null;
+      dragging = false;
+    } else {
+      // no meaningful movement occurred -> treat as a click/tap
+      onClick(n);
+    }
+  }
+
+  g.addEventListener("mousedown", onDown);
+  g.addEventListener("touchstart", onDown, { passive: true });
+  // prevent the browser's native click (fired after mouseup on the same element)
+  // from bubbling up to the background handler and immediately closing the panel
+  g.addEventListener("click", (ev) => ev.stopPropagation());
+}
+
+// ---------- Zoom / Pan (vanilla replacement for d3-zoom) ----------
+let panX = 0, panY = 0, scale = 1;
+function applyTransform() {
+  viewport.setAttribute("transform", `translate(${panX},${panY}) scale(${scale})`);
+}
+applyTransform();
+
+let isPanning = false, lastX = 0, lastY = 0;
+svg.addEventListener("mousedown", (ev) => {
+  if (ev.target !== svg) return; // only pan when clicking empty background
+  isPanning = true;
+  lastX = ev.clientX; lastY = ev.clientY;
+  svg.classList.add("panning");
+});
+window.addEventListener("mousemove", (ev) => {
+  if (!isPanning) return;
+  panX += (ev.clientX - lastX);
+  panY += (ev.clientY - lastY);
+  lastX = ev.clientX; lastY = ev.clientY;
+  applyTransform();
+});
+window.addEventListener("mouseup", () => { isPanning = false; svg.classList.remove("panning"); });
+
+svg.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const rect = svg.getBoundingClientRect();
+  const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+  const zoomFactor = Math.pow(1.001, -ev.deltaY);
+  const newScale = Math.max(0.1, Math.min(8, scale * zoomFactor));
+  // zoom around cursor position
+  const dx = mx - rect.width/2, dy = my - rect.height/2;
+  panX = dx - (dx - panX) * (newScale / scale);
+  panY = dy - (dy - panY) * (newScale / scale);
+  scale = newScale;
+  applyTransform();
+}, { passive: false });
+
+// Touch pinch-to-zoom + single-finger pan on background
+let touchState = null;
+svg.addEventListener("touchstart", (ev) => {
+  if (ev.target !== svg) return;
+  if (ev.touches.length === 1) {
+    touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+  } else if (ev.touches.length === 2) {
+    const [t1, t2] = ev.touches;
+    touchState = {
+      mode: "pinch",
+      dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
+      scaleStart: scale
+    };
+  }
+}, { passive: true });
+svg.addEventListener("touchmove", (ev) => {
+  if (!touchState) return;
+  if (touchState.mode === "pan" && ev.touches.length === 1) {
+    const t = ev.touches[0];
+    panX += (t.clientX - touchState.x);
+    panY += (t.clientY - touchState.y);
+    touchState.x = t.clientX; touchState.y = t.clientY;
+    applyTransform();
+  } else if (touchState.mode === "pinch" && ev.touches.length === 2) {
+    const [t1, t2] = ev.touches;
+    const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+    scale = Math.max(0.1, Math.min(8, touchState.scaleStart * (dist / touchState.dist)));
+    applyTransform();
+  }
+}, { passive: true });
+svg.addEventListener("touchend", () => { touchState = null; });
+
+// ---------- Highlighting ----------
+function highlightNode(d) {
+  const neighborIds = new Set([d.id]);
+  DATA.edges.forEach(e => {
+    if (e.source.id === d.id) neighborIds.add(e.target.id);
+    if (e.target.id === d.id) neighborIds.add(e.source.id);
+  });
+  nodeEls.forEach((g, i) => g.classList.toggle("dimmed", !neighborIds.has(DATA.nodes[i].id)));
+  linkEls.forEach((line, i) => {
+    const e = DATA.edges[i];
+    line.classList.toggle("dimmed", e.source.id !== d.id && e.target.id !== d.id);
+  });
+}
+function highlightNone() {
+  nodeEls.forEach(g => g.classList.remove("dimmed"));
+  linkEls.forEach(line => line.classList.remove("dimmed"));
+}
+
+svg.addEventListener("click", () => { highlightNone(); closePanel(); });
+svg.addEventListener("dblclick", () => { highlightNone(); closePanel(); });
+
+// ---------- Panel ----------
+function fieldHtml(label, value) {
+  if (value === undefined || value === null || value === "") return "";
+  return `<div class="field"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+}
+const LEVEL_SHORT = {
+  "1": "influence légère, n'assume pas l'étiquette",
+  "2": "présent mais non virulent",
+  "3": "assumé, sans hostilité explicite",
+  "4": "assumé, avec propos haineux",
+  "5": "haine et/ou appels à la violence"
+};
+function showNodePanel(d) {
+  const communityLabel = d.type === "Média" ? "Média (hors communauté)" : (d.community === "-1" ? "Isolé" : "Communauté " + d.community);
+  const vitMap = {"0": "Donnée manquante", "1": "Oui", "2": "Non"};
+  const html = `
+    <h3>${d.label}</h3>
+    <div class="kind">${d.type}</div>
+    ${fieldHtml("Communauté", communityLabel)}
+    ${fieldHtml("Betweenness centrality", d.betweenness.toFixed(4))}
+    ${fieldHtml("Degré / Degré pondéré", d.degree + " / " + d.wdegree)}
+    ${fieldHtml("Abonnés", d.followers ? Number(d.followers).toLocaleString("fr-FR") : "—")}
+    ${fieldHtml("Niveau masculinisme", LEVEL_SHORT[d.niveau] ? d.niveau + ' <span class="lvl-short">— ' + LEVEL_SHORT[d.niveau] + '</span>' : (d.niveau || "—"))}
+    ${fieldHtml("Vit de son contenu", vitMap[d.vit] || "—")}
+    ${d.missing ? '<div class="field"><div class="value" style="color:#e67e22">Données incomplètes</div></div>' : ""}
+  `;
+  document.getElementById("panel-content").innerHTML = html;
+  document.getElementById("panel").classList.add("open");
+}
+function showEdgePanel(e) {
+  const html = `
+    <h3>${e.sourceLabel} → ${e.targetLabel}</h3>
+    <div class="kind">Relation</div>
+    ${fieldHtml("Type", e.type)}
+    ${fieldHtml("Poids", e.weight)}
+    ${fieldHtml("Détail", e.label)}
+  `;
+  document.getElementById("panel-content").innerHTML = html;
+  document.getElementById("panel").classList.add("open");
+}
+function closePanel() { document.getElementById("panel").classList.remove("open"); }
+document.getElementById("panel-close").addEventListener("click", closePanel);
+
+// ---------- Search ----------
+document.getElementById("search").addEventListener("input", (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  if (!q) { highlightNone(); return; }
+  const matches = new Set(DATA.nodes.filter(n => n.label.toLowerCase().includes(q)).map(n => n.id));
+  nodeEls.forEach((g, i) => g.classList.toggle("dimmed", !matches.has(DATA.nodes[i].id)));
+  linkEls.forEach(line => line.classList.add("dimmed"));
+});
+
+// ---------- Figure description modal ----------
+const captionOverlay = document.getElementById("caption-overlay");
+document.getElementById("caption-btn").addEventListener("click", () => captionOverlay.classList.add("open"));
+document.getElementById("caption-close").addEventListener("click", () => captionOverlay.classList.remove("open"));
+captionOverlay.addEventListener("click", (ev) => { if (ev.target === captionOverlay) captionOverlay.classList.remove("open"); });
+
+// ---------- Scale definition modal ----------
+const scaleOverlay = document.getElementById("scale-overlay");
+document.getElementById("scale-btn").addEventListener("click", (ev) => { ev.stopPropagation(); scaleOverlay.classList.add("open"); });
+document.getElementById("scale-close").addEventListener("click", () => scaleOverlay.classList.remove("open"));
+scaleOverlay.addEventListener("click", (ev) => { if (ev.target === scaleOverlay) scaleOverlay.classList.remove("open"); });
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") { scaleOverlay.classList.remove("open"); captionOverlay.classList.remove("open"); }
+});
+</script>
+</body>
+</html>
